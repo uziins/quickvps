@@ -1,0 +1,13 @@
+const express = require('express');
+const app = express();
+const port = __PORT__;
+
+app.use(express.static(__dirname + '/public'));
+
+app.get('/', (req, res) => {
+  res.send('Hello from Express app at port ' + port);
+});
+
+app.listen(port, () => {
+  console.log(`Server running at http://localhost:${port}`);
+});

@@ -1,0 +1,14 @@
+server {
+    listen 80;
+    server_name __SERVER_NAME__;
+
+    root __DOCROOT__;
+    index index.html index.htm;
+
+    access_log __LOG_ACCESS__;
+    error_log __LOG_ERROR__;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

@@ -1,0 +1,16 @@
+server {
+    listen 80;
+    server_name __SERVER_NAME__;
+
+    access_log __LOG_ACCESS__;
+    error_log __LOG_ERROR__;
+
+    location / {
+        proxy_pass http://127.0.0.1:__PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}

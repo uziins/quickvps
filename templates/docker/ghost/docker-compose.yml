@@ -1,0 +1,10 @@
+services:
+  ghost:
+    image: ghost:5-alpine
+    restart: unless-stopped
+    ports:
+      - "__PORT__:2368"
+    environment:
+      - url=https://${DOMAIN}
+    volumes:
+      - ./content:/var/lib/ghost/content
