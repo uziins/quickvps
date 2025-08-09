@@ -2,73 +2,53 @@
 
 All notable changes to QuickVPS will be documented in this file.
 
-## [1.0.0] - 2025-08-07
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.0] - 2024-08-09
 
 ### Added
-- Initial release of QuickVPS - VPS Configuration Tool
-- Interactive menu-driven interface
-- Modular architecture with separate modules for different functionalities
-- Server setup automation (LEMP stack, Node.js, Docker, Certbot)
-- User management system
-- Domain configuration with multiple stack support
-- Docker application deployment
-- Template system for various web stacks
-- Comprehensive logging system
-- SSL certificate automation
-- Color-coded output for better user experience
-- Confirmation prompts for destructive operations
+- Initial release of QuickVPS
+- Server setup and configuration module
+- User management with SSH key support
+- Domain management with multiple stack support
+- Laravel application deployment with proper security
+- WordPress deployment with database setup
+- Node.js application deployment with PM2
+- Docker application templates (Ghost, n8n)
+- Static site deployment
+- Automatic SSL/TLS with Let's Encrypt
+- Security hardening with UFW firewall
+- Nginx configuration templates for all stacks
+
+### Security
+- Composer and artisan commands run as www-data user (not root)
+- Proper file permissions and ownership
+- Security headers in all Nginx configurations
+- SSH key-based authentication setup
+- Fail2ban integration for brute force protection
 
 ### Features
-- **Server Management**
-  - LEMP stack installation with configurable PHP version
-  - Node.js LTS installation
-  - Docker and Docker Compose setup
-  - Certbot for SSL certificates
+- Git repository cloning with SSH to HTTPS conversion
+- Automatic Laravel project setup (composer, .env, key generation)
+- Interactive domain and stack selection
+- Fallback mechanisms for permission issues
+- Comprehensive error handling and logging
+- Color-coded output for better user experience
 
-- **User Management**
-  - Create new system users
-  - Add users to sudo group
+### Templates
+- Nginx configuration templates for Laravel, WordPress, Node.js, Docker, Static
+- Docker Compose templates for Ghost and n8n
+- Default PHP and HTML files for quick testing
 
-- **Domain Setup**
-  - PHP (Native) applications
-  - Laravel applications
-  - WordPress sites
-  - Static websites
-  - Node.js (Express) applications
-  - Dockerized applications
+## [Unreleased]
 
-- **Docker Management**
-  - Standalone Docker app deployment
-  - Container status checking
-  - Pre-configured templates (Ghost, n8n)
-
-- **Templates Included**
-  - Nginx configurations for all supported stacks
-  - Express.js application template
-  - Docker Compose templates
-  - Sample PHP and HTML files
-
-### Technical Details
-- Environment variable configuration support
-- Comprehensive error handling and validation
-- Automatic logging to `/var/log/vps-setup.log`
-- Domain-specific log directories
-- Git integration for project cloning
-- Secure file permissions and ownership management
-
----
-
-## How to Update This Changelog
-
-When making changes to the tool, please update this file with:
-- Version number following semantic versioning (MAJOR.MINOR.PATCH)
-- Date of release
-- List of added, changed, deprecated, removed, fixed, or security-related changes
-
-### Change Categories
-- **Added** for new features
-- **Changed** for changes in existing functionality
-- **Deprecated** for soon-to-be removed features
-- **Removed** for now removed features
-- **Fixed** for any bug fixes
-- **Security** for vulnerability fixes
+### Planned
+- MySQL/MariaDB automatic setup for WordPress and Laravel
+- PostgreSQL support
+- Redis support for Laravel caching
+- Backup and restore functionality
+- Monitoring setup (Prometheus, Grafana)
+- More Docker application templates
+- CI/CD pipeline integration
+- Multi-server management support

@@ -27,9 +27,79 @@ setup_git_clone() {
         read -rp "Enter Git repository URL: " GIT_URL
         if [ -n "$GIT_URL" ]; then
             echo -e "${CYAN}Cloning repository...${NC}"
-            git clone "$GIT_URL" "$DOCROOT"
-            chown -R www-data:www-data "$DOCROOT"
-            echo -e "${GREEN}✅ Cloned repository to $DOCROOT${NC}"
+
+            # Convert SSH URL to HTTPS if needed
+            if [[ "$GIT_URL" =~ ^git@github\.com: ]]; then
+                HTTPS_URL=$(echo "$GIT_URL" | sed 's/git@github\.com:/https:\/\/github.com\//' | sed 's/\.git$//')
+                echo -e "${YELLOW}SSH URL detected. Converting to HTTPS: $HTTPS_URL${NC}"
+                read -rp "Use HTTPS URL instead? [Y/n]: " USE_HTTPS
+                if [[ ! "$USE_HTTPS" =~ ^[Nn]$ ]]; then
+                    GIT_URL="$HTTPS_URL"
+                fi
+            fi
+
+            # Check if directory exists and is not empty
+            if [ -d "$DOCROOT" ] && [ "$(ls -A "$DOCROOT" 2>/dev/null)" ]; then
+                echo -e "${YELLOW}Directory $DOCROOT is not empty.${NC}"
+                read -rp "Remove existing files and clone fresh? [y/N]: " REMOVE_EXISTING
+                if [[ "$REMOVE_EXISTING" =~ ^[Yy]$ ]]; then
+                    rm -rf "$DOCROOT"/*
+                    rm -rf "$DOCROOT"/.[!.]*  # Remove hidden files but keep . and ..
+                else
+                    echo -e "${YELLOW}Skipping git clone. Using existing directory.${NC}"
+                    return
+                fi
+            fi
+
+            # Create directory if it doesn't exist
+            mkdir -p "$DOCROOT"
+
+            # Clone repository
+            echo -e "${CYAN}Attempting to clone: $GIT_URL${NC}"
+            if git clone "$GIT_URL" "$DOCROOT/temp_clone" 2>/dev/null; then
+                # Move files from temp directory to docroot
+                mv "$DOCROOT/temp_clone"/* "$DOCROOT/" 2>/dev/null
+                mv "$DOCROOT/temp_clone"/.[!.]* "$DOCROOT/" 2>/dev/null  # Move hidden files
+                rmdir "$DOCROOT/temp_clone"
+
+                chown -R www-data:www-data "$DOCROOT"
+                echo -e "${GREEN}✅ Successfully cloned repository to $DOCROOT${NC}"
+
+                # Setup Laravel specific requirements if it's a Laravel project
+                if [ "$STACK_TYPE" = "laravel" ]; then
+                    setup_laravel_project "$DOCROOT"
+                fi
+            else
+                echo -e "${RED}❌ Failed to clone repository.${NC}"
+                echo -e "${YELLOW}Possible solutions:${NC}"
+                echo -e "${YELLOW}1. Use HTTPS URL instead of SSH ${NC}"
+                echo -e "${YELLOW}2. Add SSH key to VPS and configure GitHub access${NC}"
+                echo -e "${YELLOW}3. Make repository public temporarily${NC}"
+
+                read -rp "Try with different URL? [y/N]: " RETRY
+                if [[ "$RETRY" =~ ^[Yy]$ ]]; then
+                    read -rp "Enter alternative repository URL: " ALT_GIT_URL
+                    if [ -n "$ALT_GIT_URL" ]; then
+                        echo -e "${CYAN}Attempting to clone: $ALT_GIT_URL${NC}"
+                        if git clone "$ALT_GIT_URL" "$DOCROOT/temp_clone"; then
+                            mv "$DOCROOT/temp_clone"/* "$DOCROOT/" 2>/dev/null
+                            mv "$DOCROOT/temp_clone"/.[!.]* "$DOCROOT/" 2>/dev/null
+                            rmdir "$DOCROOT/temp_clone"
+                            chown -R www-data:www-data "$DOCROOT"
+                            echo -e "${GREEN}✅ Successfully cloned repository to $DOCROOT${NC}"
+
+                            if [ "$STACK_TYPE" = "laravel" ]; then
+                                setup_laravel_project "$DOCROOT"
+                            fi
+                        else
+                            echo -e "${RED}❌ Alternative clone also failed.${NC}"
+                            return 1
+                        fi
+                    fi
+                else
+                    return 1
+                fi
+            fi
         fi
     fi
 }
@@ -325,4 +395,99 @@ show_domain_menu() {
         4) delete_domain ;;
         *) echo -e "${YELLOW}Invalid option.${NC}" ;;
     esac
+}
+
+setup_laravel_project() {
+    local docroot="$1"
+
+    echo -e "${CYAN}Setting up Laravel project...${NC}"
+
+    # Check if composer is installed
+    if ! command -v composer &>/dev/null; then
+        echo -e "${YELLOW}Composer not found. Installing...${NC}"
+        # Install composer system-wide but safely
+        curl -sS https://getcomposer.org/installer | php
+        mv composer.phar /usr/local/bin/composer
+        chmod +x /usr/local/bin/composer
+
+        # Set composer to not run as root warning
+        export COMPOSER_ALLOW_SUPERUSER=1
+    fi
+
+    cd "$docroot"
+
+    # Set proper ownership first
+    chown -R www-data:www-data "$docroot"
+
+    # Install dependencies as www-data user (not root)
+    echo -e "${CYAN}Installing Composer dependencies (running as www-data user)...${NC}"
+    if sudo -u www-data composer install --no-dev --optimize-autoloader --no-interaction; then
+        echo -e "${GREEN}✅ Composer dependencies installed successfully${NC}"
+    else
+        echo -e "${YELLOW}⚠️ Composer install failed as www-data, trying with fallback method...${NC}"
+        # Fallback: run as root but with explicit permission
+        COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
+        echo -e "${YELLOW}⚠️ Composer ran as root (not recommended, but necessary as fallback)${NC}"
+        # Re-fix ownership after root composer run
+        chown -R www-data:www-data "$docroot"
+    fi
+
+    # Setup .env file
+    if [ -f ".env.example" ] && [ ! -f ".env" ]; then
+        sudo -u www-data cp .env.example .env
+        echo -e "${GREEN}✅ .env file created from .env.example${NC}"
+    fi
+
+    # Generate application key (run as www-data if possible)
+    if [ -f ".env" ]; then
+        if sudo -u www-data php artisan key:generate --no-interaction 2>/dev/null; then
+            echo -e "${GREEN}✅ Application key generated (as www-data)${NC}"
+        else
+            # Fallback to root if www-data doesn't have proper permissions
+            php artisan key:generate --no-interaction
+            echo -e "${YELLOW}⚠️ Application key generated as root${NC}"
+        fi
+    fi
+
+    # Set proper permissions
+    chown -R www-data:www-data "$docroot"
+    chmod -R 755 "$docroot"
+
+    # Laravel specific directory permissions
+    if [ -d "$docroot/storage" ]; then
+        chmod -R 775 "$docroot/storage"
+    fi
+    if [ -d "$docroot/bootstrap/cache" ]; then
+        chmod -R 775 "$docroot/bootstrap/cache"
+    fi
+
+    # Clear and cache config (run as www-data if possible)
+    echo -e "${CYAN}Optimizing Laravel application...${NC}"
+
+    # Try to run artisan commands as www-data
+    if sudo -u www-data php artisan config:clear --no-interaction 2>/dev/null && \
+       sudo -u www-data php artisan cache:clear --no-interaction 2>/dev/null; then
+        echo -e "${GREEN}✅ Cache cleared (as www-data)${NC}"
+
+        # Try to cache configs as www-data
+        if sudo -u www-data php artisan config:cache --no-interaction 2>/dev/null && \
+           sudo -u www-data php artisan route:cache --no-interaction 2>/dev/null && \
+           sudo -u www-data php artisan view:cache --no-interaction 2>/dev/null; then
+            echo -e "${GREEN}✅ Application optimized (as www-data)${NC}"
+        else
+            echo -e "${YELLOW}⚠️ Some optimization commands failed as www-data, skipping caching${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️ Running artisan commands as root (not recommended)${NC}"
+        php artisan config:clear --no-interaction
+        php artisan cache:clear --no-interaction
+        # Skip caching when running as root to avoid permission issues
+        echo -e "${YELLOW}⚠️ Skipping config caching to avoid permission issues${NC}"
+    fi
+
+    # Final ownership fix
+    chown -R www-data:www-data "$docroot"
+
+    echo -e "${GREEN}✅ Laravel project setup completed${NC}"
+    echo -e "${CYAN}ℹ️  Note: Composer and artisan commands were run with appropriate user permissions${NC}"
 }

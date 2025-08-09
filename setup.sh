@@ -19,6 +19,7 @@ source "$SCRIPT_DIR/modules/utils.sh"
 source "$SCRIPT_DIR/modules/server.sh"
 source "$SCRIPT_DIR/modules/user.sh"
 source "$SCRIPT_DIR/modules/domain.sh"
+source "$SCRIPT_DIR/modules/database.sh"
 source "$SCRIPT_DIR/modules/docker.sh"
 
 # Check if the script is run as root
@@ -33,15 +34,17 @@ while true; do
     echo "1) Server Setup"
     echo "2) User Setup"
     echo "3) Domain Setup"
-    echo "4) Docker Management"
-    echo "5) Exit"
-    read -rp "Select an option [1-5]: " MAIN_OPTION
+    echo "4) Database Management"
+    echo "5) Docker Management"
+    echo "6) Exit"
+    read -rp "Select an option [1-6]: " MAIN_OPTION
     case $MAIN_OPTION in
         1) show_server_menu ;;
         2) show_user_menu ;;
         3) show_domain_menu ;;
-        4) show_docker_menu ;;
-        5) echo -e "${GREEN}Goodbye!${NC}"; break ;;
-        *) echo -e "${YELLOW}Invalid option. Please select 1-5.${NC}" ;;
+        4) show_database_menu ;;
+        5) show_docker_menu ;;
+        6) echo -e "${GREEN}Goodbye!${NC}"; break ;;
+        *) echo -e "${YELLOW}Invalid option. Please select 1-6.${NC}" ;;
     esac
 done

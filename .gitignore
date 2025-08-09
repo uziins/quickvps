@@ -1,2 +1,52 @@
-.idea
+# Logs
+*.log
+/var/log/
+
+# Environment files
 .env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Test files
+test_*
+debug_*
+
+# User specific config (if any)
+config.local
+local_settings.sh
+
+# SSH keys (if accidentally placed here)
+*.pem
+*.key
+id_rsa*
+*.pub
+
+# Database dumps
+*.sql
+*.dump
