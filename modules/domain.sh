@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Ensure template directory is set correctly
+if [ -z "$NGINX_TEMPLATE_DIR" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    NGINX_TEMPLATE_DIR="$(dirname "$SCRIPT_DIR")/templates"
+fi
+
 select_stack_type() {
     echo -e "${CYAN}Select Stack Type:${NC}"
     echo "1) PHP (Native)"
@@ -405,89 +411,41 @@ setup_laravel_project() {
     # Check if composer is installed
     if ! command -v composer &>/dev/null; then
         echo -e "${YELLOW}Composer not found. Installing...${NC}"
-        # Install composer system-wide but safely
         curl -sS https://getcomposer.org/installer | php
         mv composer.phar /usr/local/bin/composer
         chmod +x /usr/local/bin/composer
-
-        # Set composer to not run as root warning
-        export COMPOSER_ALLOW_SUPERUSER=1
     fi
 
     cd "$docroot"
 
-    # Set proper ownership first
-    chown -R www-data:www-data "$docroot"
-
-    # Install dependencies as www-data user (not root)
-    echo -e "${CYAN}Installing Composer dependencies (running as www-data user)...${NC}"
-    if sudo -u www-data composer install --no-dev --optimize-autoloader --no-interaction; then
-        echo -e "${GREEN}✅ Composer dependencies installed successfully${NC}"
-    else
-        echo -e "${YELLOW}⚠️ Composer install failed as www-data, trying with fallback method...${NC}"
-        # Fallback: run as root but with explicit permission
-        COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
-        echo -e "${YELLOW}⚠️ Composer ran as root (not recommended, but necessary as fallback)${NC}"
-        # Re-fix ownership after root composer run
-        chown -R www-data:www-data "$docroot"
-    fi
+    # Install dependencies
+    echo -e "${CYAN}Installing Composer dependencies...${NC}"
+    composer install --no-dev --optimize-autoloader
 
     # Setup .env file
     if [ -f ".env.example" ] && [ ! -f ".env" ]; then
-        sudo -u www-data cp .env.example .env
+        cp .env.example .env
         echo -e "${GREEN}✅ .env file created from .env.example${NC}"
     fi
 
-    # Generate application key (run as www-data if possible)
+    # Generate application key
     if [ -f ".env" ]; then
-        if sudo -u www-data php artisan key:generate --no-interaction 2>/dev/null; then
-            echo -e "${GREEN}✅ Application key generated (as www-data)${NC}"
-        else
-            # Fallback to root if www-data doesn't have proper permissions
-            php artisan key:generate --no-interaction
-            echo -e "${YELLOW}⚠️ Application key generated as root${NC}"
-        fi
+        php artisan key:generate
+        echo -e "${GREEN}✅ Application key generated${NC}"
     fi
 
     # Set proper permissions
     chown -R www-data:www-data "$docroot"
     chmod -R 755 "$docroot"
+    chmod -R 775 "$docroot/storage"
+    chmod -R 775 "$docroot/bootstrap/cache"
 
-    # Laravel specific directory permissions
-    if [ -d "$docroot/storage" ]; then
-        chmod -R 775 "$docroot/storage"
-    fi
-    if [ -d "$docroot/bootstrap/cache" ]; then
-        chmod -R 775 "$docroot/bootstrap/cache"
-    fi
-
-    # Clear and cache config (run as www-data if possible)
-    echo -e "${CYAN}Optimizing Laravel application...${NC}"
-
-    # Try to run artisan commands as www-data
-    if sudo -u www-data php artisan config:clear --no-interaction 2>/dev/null && \
-       sudo -u www-data php artisan cache:clear --no-interaction 2>/dev/null; then
-        echo -e "${GREEN}✅ Cache cleared (as www-data)${NC}"
-
-        # Try to cache configs as www-data
-        if sudo -u www-data php artisan config:cache --no-interaction 2>/dev/null && \
-           sudo -u www-data php artisan route:cache --no-interaction 2>/dev/null && \
-           sudo -u www-data php artisan view:cache --no-interaction 2>/dev/null; then
-            echo -e "${GREEN}✅ Application optimized (as www-data)${NC}"
-        else
-            echo -e "${YELLOW}⚠️ Some optimization commands failed as www-data, skipping caching${NC}"
-        fi
-    else
-        echo -e "${YELLOW}⚠️ Running artisan commands as root (not recommended)${NC}"
-        php artisan config:clear --no-interaction
-        php artisan cache:clear --no-interaction
-        # Skip caching when running as root to avoid permission issues
-        echo -e "${YELLOW}⚠️ Skipping config caching to avoid permission issues${NC}"
-    fi
-
-    # Final ownership fix
-    chown -R www-data:www-data "$docroot"
+    # Clear and cache config
+    php artisan config:clear
+    php artisan cache:clear
+    php artisan config:cache
+    php artisan route:cache
+    php artisan view:cache
 
     echo -e "${GREEN}✅ Laravel project setup completed${NC}"
-    echo -e "${CYAN}ℹ️  Note: Composer and artisan commands were run with appropriate user permissions${NC}"
 }
