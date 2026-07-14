@@ -9,8 +9,7 @@ server {
     }
 
     location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php__PHP_VERSION__-fpm.sock;
+        __FASTCGI_CONFIG__
     }
 
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {

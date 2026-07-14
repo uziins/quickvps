@@ -40,7 +40,7 @@ setup_docker_app_standalone() {
     DOCKER_PORT=${DOCKER_PORT:-$DEFAULT_DOCKER_PORT}
 
     cp "$TEMPLATE_PATH" "$DOCROOT/docker-compose.yml"
-    chown -R www-data:www-data "$DOCROOT"
+    chown -R "$WEB_USER":"$WEB_GROUP" "$DOCROOT"
 
     echo -e "${CYAN}Starting Docker app ($DOCKER_APP) using docker-compose...${NC}"
     (cd "$DOCROOT" && docker compose up -d)

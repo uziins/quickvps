@@ -14,7 +14,8 @@ select_stack_type() {
     echo "4) Static Site"
     echo "5) Node.js (Express)"
     echo "6) Dockerized App"
-    read -rp "Choose stack type [1-6]: " STACK_OPTION
+    echo "7) Reverse Proxy (Generic)"
+    read -rp "Choose stack type [1-7]: " STACK_OPTION
     case $STACK_OPTION in
         1) STACK_TYPE="php" ;;
         2) STACK_TYPE="laravel" ;;
@@ -22,6 +23,7 @@ select_stack_type() {
         4) STACK_TYPE="static" ;;
         5) STACK_TYPE="node" ;;
         6) STACK_TYPE="docker" ;;
+        7) STACK_TYPE="proxy" ;;
         *) echo -e "${YELLOW}Invalid option. Defaulting to PHP.${NC}"; STACK_TYPE="php" ;;
     esac
 }
@@ -68,7 +70,7 @@ setup_git_clone() {
                 mv "$DOCROOT/temp_clone"/.[!.]* "$DOCROOT/" 2>/dev/null  # Move hidden files
                 rmdir "$DOCROOT/temp_clone"
 
-                chown -R www-data:www-data "$DOCROOT"
+                chown -R "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$DOCROOT"
                 echo -e "${GREEN}✅ Successfully cloned repository to $DOCROOT${NC}"
 
                 # Setup Laravel specific requirements if it's a Laravel project
@@ -91,7 +93,7 @@ setup_git_clone() {
                             mv "$DOCROOT/temp_clone"/* "$DOCROOT/" 2>/dev/null
                             mv "$DOCROOT/temp_clone"/.[!.]* "$DOCROOT/" 2>/dev/null
                             rmdir "$DOCROOT/temp_clone"
-                            chown -R www-data:www-data "$DOCROOT"
+                            chown -R "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$DOCROOT"
                             echo -e "${GREEN}✅ Successfully cloned repository to $DOCROOT${NC}"
 
                             if [ "$STACK_TYPE" = "laravel" ]; then
@@ -159,7 +161,7 @@ setup_docker_app() {
         fi
     fi
 
-    chown -R www-data:www-data "$DOCROOT"
+    chown -R "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$DOCROOT"
 
     echo -e "${CYAN}Starting Docker app ($DOCKER_APP) using docker-compose...${NC}"
     (cd "$DOCROOT" && docker compose up -d)
@@ -213,7 +215,7 @@ setup_static_site() {
     else
         echo -e "${YELLOW}⚠️ Template for static site not found: $template_file${NC}"
     fi
-    chown -R www-data:www-data "$docroot"
+    chown -R "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$docroot"
 }
 
 setup_php_site() {
@@ -233,7 +235,7 @@ setup_php_site() {
     else
         echo -e "${YELLOW}⚠️ Template for PHP site not found: $template_file${NC}"
     fi
-    chown -R www-data:www-data "$docroot"
+    chown -R "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$docroot"
 }
 
 add_domain() {
@@ -253,6 +255,16 @@ add_domain() {
     DOCROOT=${DOCROOT:-$DEFAULT_DOCROOT_BASE/$DOMAIN}
     DOCROOT=$(realpath -m "$DOCROOT")
 
+    if [[ -z "$DOMAIN_OWNER" ]]; then
+        local smart_owner=$(get_smart_owner "$DOCROOT")
+        if [[ "$NON_INTERACTIVE" != "1" ]]; then
+            read -rp "Enter owner for this domain [default: $smart_owner]: " INPUT_OWNER
+            DOMAIN_OWNER=${INPUT_OWNER:-$smart_owner}
+        else
+            DOMAIN_OWNER=$smart_owner
+        fi
+    fi
+
     select_stack_type
 
     echo -e "${CYAN}Creating Nginx config for $DOMAIN... (Stack: $STACK_TYPE)${NC}"
@@ -260,7 +272,7 @@ add_domain() {
 
     if confirm_action; then
         mkdir -p "$DOCROOT"
-        chown -R www-data:www-data "$DOCROOT"
+        chown -R "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$DOCROOT"
 
         setup_logging_for_domain "$DOMAIN"
         setup_git_clone
@@ -284,26 +296,45 @@ add_domain() {
             docker)
                 TEMPLATE_PATH="$NGINX_TEMPLATE_DIR/nginx_docker.conf.template"
                 setup_docker_app ;;
+            proxy)
+                TEMPLATE_PATH="$NGINX_TEMPLATE_DIR/nginx_proxy.conf.template"
+                if [[ -z "$PROXY_PORT" ]]; then
+                    if [[ "$NON_INTERACTIVE" != "1" ]]; then
+                        read -rp "Enter proxy port (e.g. 8090): " PROXY_PORT
+                    fi
+                fi
+                STACK_PORT=${PROXY_PORT:-8080}
+                ;;
         esac
 
-        CONFIG_PATH="/etc/nginx/sites-available/$DOMAIN"
+        CONFIG_PATH="$NGINX_CONF_DIR/$DOMAIN.conf"
         if [ ! -f "$TEMPLATE_PATH" ]; then
             echo -e "${RED}Template file not found: $TEMPLATE_PATH${NC}"
             log "Template file not found for $STACK_TYPE"
             return
         fi
 
+        local FASTCGI_CONFIG
+        if [[ "$OS_FAMILY" == "debian" ]]; then
+            FASTCGI_CONFIG="include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php${PHP_VERSION}-fpm.sock;"
+        else
+            FASTCGI_CONFIG="include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name; fastcgi_pass unix:/run/php-fpm/www.sock;"
+        fi
+
         sed -e "s|__DOMAIN__|$DOMAIN|g" \
             -e "s|__DOCROOT__|$DOCROOT|g" \
             -e "s|__PHP_VERSION__|$PHP_VERSION|g" \
+            -e "s|__FASTCGI_CONFIG__|$FASTCGI_CONFIG|g" \
             -e "s|__LOG_ACCESS__|/var/log/nginx/$DOMAIN/access.log|g" \
             -e "s|__LOG_ERROR__|/var/log/nginx/$DOMAIN/error.log|g" \
             -e "s|__PORT__|$STACK_PORT|g" \
             -e "s|__SERVER_NAME__|$DOMAIN $WWW_DOMAIN|g" \
             "$TEMPLATE_PATH" > "$CONFIG_PATH"
 
-        if [ ! -L "/etc/nginx/sites-enabled/$DOMAIN" ]; then
-            ln -s "$CONFIG_PATH" "/etc/nginx/sites-enabled/"
+        if [ "$NGINX_CONF_DIR" != "$NGINX_ENABLED_DIR" ]; then
+            if [ ! -L "$NGINX_ENABLED_DIR/$DOMAIN.conf" ]; then
+                ln -s "$CONFIG_PATH" "$NGINX_ENABLED_DIR/"
+            fi
         fi
 
         if nginx -t; then
@@ -315,8 +346,8 @@ add_domain() {
             if [[ "$ENABLE_SSL" =~ ^[Yy]$ ]]; then
                 if ! command -v certbot &>/dev/null; then
                     echo -e "${YELLOW}Certbot not found. Installing...${NC}"
-                    apt update
-                    apt install -y certbot python3-certbot-nginx
+                    $PKG_UPDATE
+                    $PKG_INSTALL certbot python3-certbot-nginx
                 fi
 
                 if [[ -n "$WWW_DOMAIN" ]]; then
@@ -336,22 +367,32 @@ add_domain() {
 }
 
 list_domains() {
-    echo -e "${CYAN}Configured domains:${NC}"
-    ls /etc/nginx/sites-available
+    echo -e "${CYAN}Configured domains in $NGINX_CONF_DIR:${NC}"
+    ls -1 "$NGINX_CONF_DIR" 2>/dev/null | grep -v "^default$" || echo "No domains found."
 }
 
 modify_domain() {
     read -rp "Enter domain to modify: " DOMAIN
-    if [ ! -f "/etc/nginx/sites-available/$DOMAIN" ]; then
-        echo -e "${RED}Domain $DOMAIN does not exist.${NC}"
-        return
+    CONFIG_PATH="$NGINX_CONF_DIR/$DOMAIN.conf"
+    if [ ! -f "$CONFIG_PATH" ]; then
+        # Try without .conf
+        CONFIG_PATH="$NGINX_CONF_DIR/$DOMAIN"
+        if [ ! -f "$CONFIG_PATH" ]; then
+            echo -e "${RED}Domain $DOMAIN does not exist in configuration.${NC}"
+            return
+        fi
     fi
     read -rp "Enter new document root (leave blank to keep existing): " NEW_DOCROOT
     if confirm_action; then
         if [ -n "$NEW_DOCROOT" ]; then
-            sed -i "s|root .*;|root $NEW_DOCROOT;|" "/etc/nginx/sites-available/$DOMAIN"
+            sed -i "s|root .*;|root $NEW_DOCROOT;|" "$CONFIG_PATH"
             mkdir -p "$NEW_DOCROOT"
-            chown -R www-data:www-data "$NEW_DOCROOT"
+            local smart_owner=$(get_smart_owner "$NEW_DOCROOT")
+            if [[ "$NON_INTERACTIVE" != "1" ]]; then
+                read -rp "Enter new owner [default: $smart_owner]: " NEW_OWNER
+            fi
+            DOMAIN_OWNER=${NEW_OWNER:-$smart_owner}
+            set_docroot_permissions "$NEW_DOCROOT" "$DOMAIN_OWNER"
         fi
         if nginx -t; then
             systemctl reload nginx
@@ -364,8 +405,8 @@ modify_domain() {
 
 delete_domain() {
     read -rp "Enter domain name to delete: " DOMAIN
-    CONFIG_PATH="/etc/nginx/sites-available/$DOMAIN"
-    ENABLED_PATH="/etc/nginx/sites-enabled/$DOMAIN"
+    CONFIG_PATH="$NGINX_CONF_DIR/$DOMAIN.conf"
+    ENABLED_PATH="$NGINX_ENABLED_DIR/$DOMAIN.conf"
 
     if [ ! -f "$CONFIG_PATH" ]; then
         echo -e "${RED}❌ Domain config not found: $DOMAIN${NC}"
@@ -435,7 +476,7 @@ setup_laravel_project() {
     fi
 
     # Set proper permissions
-    chown -R www-data:www-data "$docroot"
+    chown -R "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$docroot"
     chmod -R 755 "$docroot"
     chmod -R 775 "$docroot/storage"
     chmod -R 775 "$docroot/bootstrap/cache"
