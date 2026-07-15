@@ -70,9 +70,10 @@ if [ "$#" -gt 0 ]; then
         domain)
             case $ACTION in
                 add) add_domain ;;
-                list) list_domains ;;
                 delete) delete_domain ;;
                 modify) modify_domain ;;
+                add-subdir) add_subdirectory ;;
+                list) list_domains ;;
                 *) echo -e "${RED}Unknown domain action: $ACTION${NC}"; exit 1 ;;
             esac
             ;;
@@ -128,7 +129,22 @@ while true; do
     case $MAIN_OPTION in
         1) show_server_menu ;;
         2) show_user_menu ;;
-        3) show_domain_menu ;;
+        3) 
+            echo "1) Add Domain"
+            echo "2) Delete Domain"
+            echo "3) Modify Domain"
+            echo "4) Add Subdirectory/Path to Domain"
+            echo "5) List Domains"
+            read -rp "Choose domain task [1-5]: " DOMAIN_OPTION
+            case $DOMAIN_OPTION in
+                1) add_domain ;;
+                2) delete_domain ;;
+                3) modify_domain ;;
+                4) add_subdirectory ;;
+                5) list_domains ;;
+                *) echo -e "${YELLOW}Invalid option.${NC}" ;;
+            esac
+            ;;
         4) show_docker_menu ;;
         5) show_database_menu ;;
         6) echo -e "${GREEN}Goodbye!${NC}"; break ;;

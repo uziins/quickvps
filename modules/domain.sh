@@ -516,3 +516,102 @@ setup_laravel_project() {
 
     echo -e "${GREEN}✅ Laravel project setup completed${NC}"
 }
+
+add_subdirectory() {
+    read -rp "Enter existing domain name: " DOMAIN
+    CONFIG_PATH="$NGINX_CONF_DIR/$DOMAIN.conf"
+    if [ ! -f "$CONFIG_PATH" ]; then
+        CONFIG_PATH="$NGINX_CONF_DIR/$DOMAIN"
+        if [ ! -f "$CONFIG_PATH" ]; then
+            echo -e "${RED}❌ Domain config not found: $DOMAIN${NC}"
+            return
+        fi
+    fi
+
+    read -rp "Enter subdirectory path (e.g. /api or /blog): " SUBDIR_PATH
+    if [[ ! "$SUBDIR_PATH" =~ ^/ ]]; then
+        echo -e "${RED}❌ Path must start with a slash (/).${NC}"
+        return
+    fi
+
+    echo -e "${CYAN}Choose stack type for this path:${NC}"
+    echo "1) Proxy (Generic/Docker/Node)"
+    echo "2) PHP (Native)"
+    echo "3) Static HTML"
+    read -rp "Select stack [1-3]: " SUB_STACK
+
+    local SNIPPET_CONTENT=""
+    
+    if [[ "$SUB_STACK" == "1" ]]; then
+        read -rp "Enter proxy port (e.g. 8090): " SUB_PORT
+        read -rp "Strip subdirectory prefix from requests to backend? [Y/n]: " STRIP_PREFIX
+        local TRAILING_SLASH="/"
+        if [[ "$STRIP_PREFIX" =~ ^[Nn]$ ]]; then
+            TRAILING_SLASH=""
+        fi
+        
+        local TEMPLATE_FILE="$NGINX_TEMPLATE_DIR/location_proxy.conf.template"
+        SNIPPET_CONTENT=$(sed -e "s|__PATH__|$SUBDIR_PATH|g" -e "s|__PORT__|$SUB_PORT|g" -e "s|__TRAILING_SLASH__|$TRAILING_SLASH|g" "$TEMPLATE_FILE")
+
+    elif [[ "$SUB_STACK" == "2" || "$SUB_STACK" == "3" ]]; then
+        read -rp "Enter document root for this path: " SUB_DOCROOT
+        mkdir -p "$SUB_DOCROOT"
+        local smart_owner=$(get_smart_owner "$SUB_DOCROOT")
+        read -rp "Enter owner [default: $smart_owner]: " SUB_OWNER
+        local DOMAIN_OWNER=${SUB_OWNER:-$smart_owner}
+        set_docroot_permissions "$SUB_DOCROOT" "$DOMAIN_OWNER"
+
+        if [[ "$SUB_STACK" == "2" ]]; then
+            local TEMPLATE_FILE="$NGINX_TEMPLATE_DIR/location_php.conf.template"
+            local FASTCGI_CONFIG
+            if [[ "$OS_FAMILY" == "debian" ]]; then
+                FASTCGI_CONFIG="include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php${PHP_VERSION}-fpm.sock;"
+            else
+                FASTCGI_CONFIG="include fastcgi_params; fastcgi_pass unix:/run/php-fpm/www.sock;"
+            fi
+            SNIPPET_CONTENT=$(sed -e "s|__PATH__|$SUBDIR_PATH|g" -e "s|__DOCROOT__|$SUB_DOCROOT|g" -e "s|__FASTCGI_CONFIG__|$FASTCGI_CONFIG|g" "$TEMPLATE_FILE")
+            
+            # Setup PHP basic index if empty
+            if [ ! -f "$SUB_DOCROOT/index.php" ]; then
+                cp "$NGINX_TEMPLATE_DIR/php_index.php" "$SUB_DOCROOT/index.php"
+                chown "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$SUB_DOCROOT/index.php"
+            fi
+        else
+            local TEMPLATE_FILE="$NGINX_TEMPLATE_DIR/location_static.conf.template"
+            SNIPPET_CONTENT=$(sed -e "s|__PATH__|$SUBDIR_PATH|g" -e "s|__DOCROOT__|$SUB_DOCROOT|g" "$TEMPLATE_FILE")
+            
+            # Setup static index if empty
+            if [ ! -f "$SUB_DOCROOT/index.html" ]; then
+                cp "$NGINX_TEMPLATE_DIR/static_index.html" "$SUB_DOCROOT/index.html"
+                chown "${DOMAIN_OWNER:-$WEB_USER}":"$WEB_GROUP" "$SUB_DOCROOT/index.html"
+            fi
+        fi
+    else
+        echo -e "${RED}❌ Invalid selection.${NC}"
+        return
+    fi
+
+    if confirm_action; then
+        awk -v snippet="$SNIPPET_CONTENT" '
+            /^}/ { last_brace_line = NR }
+            { lines[NR] = $0 }
+            END {
+                for (i = 1; i <= NR; i++) {
+                    if (i == last_brace_line) {
+                        print snippet
+                    }
+                    print lines[i]
+                }
+            }
+        ' "$CONFIG_PATH" > "${CONFIG_PATH}.tmp"
+        
+        mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
+
+        if nginx -t; then
+            systemctl reload nginx
+            echo -e "${GREEN}✅ Subdirectory $SUBDIR_PATH added to $DOMAIN.${NC}"
+        else
+            echo -e "${RED}❌ Nginx config test failed. Please check $CONFIG_PATH manually.${NC}"
+        fi
+    fi
+}
