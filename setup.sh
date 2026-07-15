@@ -116,6 +116,7 @@ fi
 
 # Main menu (fallback)
 while true; do
+    unset DOMAIN STACK_TYPE DOCROOT DOMAIN_OWNER USERNAME PROXY_PORT DB_NAME DB_USER DB_PASS DB_ENGINE DOCKER_APP DOCKER_PORT NODE_PORT
     echo -e "${CYAN}========= QuickVPS Setup Menu =========${NC}"
     echo "1) Server Setup"
     echo "2) User Setup"

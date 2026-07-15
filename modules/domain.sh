@@ -138,9 +138,13 @@ setup_docker_app() {
     DOCKER_TEMPLATE_DIR_PATH="$DOCKER_TEMPLATE_DIR/$DOCKER_APP"
     DOCKER_COMPOSE_TEMPLATE="$DOCKER_TEMPLATE_DIR_PATH/docker-compose.yml"
 
-    read -rp "Enter app exposed port (default $DEFAULT_DOCKER_PORT): " DOCKER_PORT
+    if [[ -z "$DOCKER_PORT" ]]; then
+        if [[ "$NON_INTERACTIVE" != "1" ]]; then
+            read -rp "Enter app exposed port (default $DEFAULT_DOCKER_PORT): " DOCKER_PORT
+        fi
+    fi
     DOCKER_PORT=${DOCKER_PORT:-$DEFAULT_DOCKER_PORT}
-
+    STACK_PORT="$DOCKER_PORT"
     mkdir -p "$DOCROOT"
     cp "$DOCKER_COMPOSE_TEMPLATE" "$DOCROOT/docker-compose.yml"
     sed -i "s|__PORT__|$DOCKER_PORT|g" "$DOCROOT/docker-compose.yml"
@@ -239,19 +243,27 @@ setup_php_site() {
 }
 
 add_domain() {
-    read -rp "Enter domain name: " DOMAIN
+    if [[ -z "$DOMAIN" ]]; then
+        read -rp "Enter domain name: " DOMAIN
+    fi
     if [[ ! "$DOMAIN" =~ ^[a-zA-Z0-9.-]+$ ]]; then
         echo -e "${RED}❌ Invalid domain format.${NC}"
         return
     fi
 
-    read -rp "Support www.$DOMAIN? [y/N]: " ENABLE_WWW
     WWW_DOMAIN=""
-    if [[ "$ENABLE_WWW" =~ ^[Yy]$ ]]; then
-        WWW_DOMAIN="www.$DOMAIN"
+    if [[ "$NON_INTERACTIVE" != "1" ]]; then
+        read -rp "Support www.$DOMAIN? [y/N]: " ENABLE_WWW
+        if [[ "$ENABLE_WWW" =~ ^[Yy]$ ]]; then
+            WWW_DOMAIN="www.$DOMAIN"
+        fi
     fi
 
-    read -rp "Enter document root (default: $DEFAULT_DOCROOT_BASE/$DOMAIN): " DOCROOT
+    if [[ -z "$DOCROOT" ]]; then
+        if [[ "$NON_INTERACTIVE" != "1" ]]; then
+            read -rp "Enter document root (default: $DEFAULT_DOCROOT_BASE/$DOMAIN): " DOCROOT
+        fi
+    fi
     DOCROOT=${DOCROOT:-$DEFAULT_DOCROOT_BASE/$DOMAIN}
     DOCROOT=$(realpath -m "$DOCROOT")
 
@@ -290,7 +302,11 @@ add_domain() {
                 setup_static_site "$DOCROOT" ;;
             node)
                 TEMPLATE_PATH="$NGINX_TEMPLATE_DIR/nginx_node.conf.template"
-                read -rp "Enter port for Node.js app (default $DEFAULT_NODE_PORT): " NODE_PORT
+                if [[ -z "$NODE_PORT" ]]; then
+                    if [[ "$NON_INTERACTIVE" != "1" ]]; then
+                        read -rp "Enter port for Node.js app (default $DEFAULT_NODE_PORT): " NODE_PORT
+                    fi
+                fi
                 STACK_PORT=${NODE_PORT:-$DEFAULT_NODE_PORT}
                 setup_express_app "$DOCROOT" "$STACK_PORT" ;;
             docker)
@@ -393,6 +409,16 @@ modify_domain() {
             fi
             DOMAIN_OWNER=${NEW_OWNER:-$smart_owner}
             set_docroot_permissions "$NEW_DOCROOT" "$DOMAIN_OWNER"
+        fi
+
+        local CURRENT_PORT=$(grep "proxy_pass http://127\.0\.0\.1:" "$CONFIG_PATH" | awk -F':' '{print $3}' | tr -d ';' | tr -d ' ' | head -n 1 2>/dev/null)
+        if [ -n "$CURRENT_PORT" ]; then
+            if [[ "$NON_INTERACTIVE" != "1" ]]; then
+                read -rp "Enter new proxy port (leave blank to keep $CURRENT_PORT): " NEW_PORT
+            fi
+            if [ -n "$NEW_PORT" ] && [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then
+                sed -i "s|proxy_pass http://127.0.0.1:$CURRENT_PORT;|proxy_pass http://127.0.0.1:$NEW_PORT;|g" "$CONFIG_PATH"
+            fi
         fi
         if nginx -t; then
             systemctl reload nginx
