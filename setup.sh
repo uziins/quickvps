@@ -19,15 +19,15 @@ source "$SCRIPT_DIR/modules/utils.sh"
 source "$SCRIPT_DIR/modules/server.sh"
 source "$SCRIPT_DIR/modules/user.sh"
 source "$SCRIPT_DIR/modules/domain.sh"
-source "$SCRIPT_DIR/modules/database.sh"
 source "$SCRIPT_DIR/modules/docker.sh"
+source "$SCRIPT_DIR/modules/database.sh"
+source "$SCRIPT_DIR/modules/tcp_proxy.sh"
 
 # Check if the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "${RED}This script must be run as root. Use sudo to run the script.${NC}"
     exit 1
 fi
-
 # Parse CLI arguments
 NON_INTERACTIVE=0
 if [ "$#" -gt 0 ]; then
@@ -106,9 +106,17 @@ if [ "$#" -gt 0 ]; then
                 *) echo -e "${RED}Unknown database action: $ACTION${NC}"; exit 1 ;;
             esac
             ;;
+        tcp)
+            case $ACTION in
+                add) add_tcp_proxy ;;
+                delete) delete_tcp_proxy ;;
+                list) list_tcp_proxies ;;
+                *) echo -e "${RED}Unknown TCP action: $ACTION${NC}"; exit 1 ;;
+            esac
+            ;;
         *)
             echo -e "${RED}Unknown module: $MODULE${NC}"
-            echo "Available modules: server, domain, user, docker, database"
+            echo "Available modules: server, domain, user, docker, database, tcp"
             exit 1
             ;;
     esac
@@ -124,8 +132,9 @@ while true; do
     echo "3) Domain Setup"
     echo "4) Docker Management"
     echo "5) Database Management"
-    echo "6) Exit"
-    read -rp "Select an option [1-6]: " MAIN_OPTION
+    echo "6) TCP/Stream Proxy Management"
+    echo "7) Exit"
+    read -rp "Select an option [1-7]: " MAIN_OPTION
     case $MAIN_OPTION in
         1) show_server_menu ;;
         2) show_user_menu ;;
@@ -147,7 +156,8 @@ while true; do
             ;;
         4) show_docker_menu ;;
         5) show_database_menu ;;
-        6) echo -e "${GREEN}Goodbye!${NC}"; break ;;
-        *) echo -e "${YELLOW}Invalid option. Please select 1-6.${NC}" ;;
+        6) show_tcp_menu ;;
+        7) echo -e "${GREEN}Goodbye!${NC}"; break ;;
+        *) echo -e "${YELLOW}Invalid option. Please select 1-7.${NC}" ;;
     esac
 done
