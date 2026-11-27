@@ -167,11 +167,19 @@ setup_php_site() {
     install_starter_file "$1" "$NGINX_TEMPLATE_DIR/php_index.php" "index.php"
 }
 
+fastcgi_pass_target() {
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+        echo "unix:/run/php/php${PHP_VERSION}-fpm.sock"
+    else
+        echo "unix:/run/php-fpm/www.sock"
+    fi
+}
+
 fastcgi_config() {
     if [[ "$OS_FAMILY" == "debian" ]]; then
-        echo "include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php${PHP_VERSION}-fpm.sock;"
+        echo "include snippets/fastcgi-php.conf; fastcgi_pass $(fastcgi_pass_target);"
     else
-        echo "include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name; fastcgi_pass unix:/run/php-fpm/www.sock;"
+        echo "include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name; fastcgi_pass $(fastcgi_pass_target);"
     fi
 }
 
@@ -808,12 +816,21 @@ add_subdirectory() {
     local config_path
     resolve_domain_config config_path "$DOMAIN" || return 1
 
-    prompt_value SUBDIR_PATH "Enter subdirectory path (e.g. /api or /blog)"
-    if [[ ! "$SUBDIR_PATH" =~ ^/[A-Za-z0-9._~/-]*$ ]]; then
-        echo -e "${RED}❌ Path must start with a slash (/) and contain only letters, digits, . _ ~ / -${NC}"
+    prompt_value SUBDIR_PATH "Enter subdirectory path (e.g. /api/ or /blog/)"
+    # Normalize to exactly one trailing slash: "/api", "/api/" and "/api//" all become "/api/".
+    # Without it, "location /api" + alias/proxy_pass ".../" maps /api/x to //x, also matches
+    # /apikey, and with alias allows /api../ to escape the directory.
+    while [[ "$SUBDIR_PATH" == */ && "$SUBDIR_PATH" != "/" ]]; do
+        SUBDIR_PATH="${SUBDIR_PATH%/}"
+    done
+    if [[ ! "$SUBDIR_PATH" =~ ^(/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)+$ ]] || [[ "$SUBDIR_PATH" =~ /\.\.?(/|$) ]]; then
+        echo -e "${RED}❌ Invalid path. Use something like /api or /blog/v1 (letters, digits, . _ ~ -; not / alone).${NC}"
         return 1
     fi
-    if grep -qE "^[[:space:]]*location[[:space:]]+$SUBDIR_PATH[[:space:]]*\{" "$config_path"; then
+    local path_noslash="$SUBDIR_PATH"
+    SUBDIR_PATH="$SUBDIR_PATH/"
+    local path_re="${path_noslash//./\\.}"
+    if grep -qE "^[[:space:]]*location[[:space:]]+(\^~[[:space:]]+|=[[:space:]]+)?$path_re/?[[:space:]]*\{" "$config_path"; then
         echo -e "${RED}❌ A location for $SUBDIR_PATH already exists in $config_path.${NC}"
         return 1
     fi
@@ -839,11 +856,17 @@ add_subdirectory() {
             echo -e "${RED}❌ Invalid port: $PROXY_PORT${NC}"
             return 1
         fi
-        local trailing_slash="/"
-        if ! ask_yes_no "Strip subdirectory prefix from requests to backend?" y; then
-            trailing_slash=""
+        # Strip: /api/users -> backend /users.  Keep: /api/users -> backend /api/users.
+        local trailing_slash="/" strip_filter="s| # __STRIP_ONLY__||"
+        if [[ "$NON_INTERACTIVE" != "1" && -z "$STRIP_PREFIX" ]]; then
+            echo -e "${CYAN}Strip: ${SUBDIR_PATH}users → backend gets /users. Keep: backend gets ${SUBDIR_PATH}users.${NC}"
         fi
-        snippet_content=$(sed -e "s|__PATH__|$SUBDIR_PATH|g" -e "s|__PORT__|$PROXY_PORT|g" \
+        if ! ask_yes_no "Strip $path_noslash prefix from requests to backend?" y "$STRIP_PREFIX"; then
+            trailing_slash=""
+            strip_filter="/__STRIP_ONLY__/d"   # X-Forwarded-Prefix only makes sense when stripping
+        fi
+        snippet_content=$(sed -e "$strip_filter" \
+            -e "s|__PATH_NOSLASH__|$path_noslash|g" -e "s|__PATH__|$SUBDIR_PATH|g" -e "s|__PORT__|$PROXY_PORT|g" \
             -e "s|__TRAILING_SLASH__|$trailing_slash|g" "$NGINX_TEMPLATE_DIR/location_proxy.conf.template")
     else
         sub_docroot="${DOCROOT:-}"
@@ -857,11 +880,12 @@ add_subdirectory() {
             return 1
         fi
         if [[ "$SUB_STACK" == "php" ]]; then
-            snippet_content=$(sed -e "s|__PATH__|$SUBDIR_PATH|g" -e "s|__DOCROOT__|$(sed_escape "$sub_docroot")|g" \
-                -e "s|__FASTCGI_CONFIG__|$(sed_escape "$(fastcgi_config)")|g" "$NGINX_TEMPLATE_DIR/location_php.conf.template")
+            snippet_content=$(sed -e "s|__PATH_NOSLASH__|$path_noslash|g" -e "s|__PATH__|$SUBDIR_PATH|g" \
+                -e "s|__DOCROOT__|$(sed_escape "$sub_docroot")|g" \
+                -e "s|__FASTCGI_PASS__|$(sed_escape "$(fastcgi_pass_target)")|g" "$NGINX_TEMPLATE_DIR/location_php.conf.template")
         else
-            snippet_content=$(sed -e "s|__PATH__|$SUBDIR_PATH|g" -e "s|__DOCROOT__|$(sed_escape "$sub_docroot")|g" \
-                "$NGINX_TEMPLATE_DIR/location_static.conf.template")
+            snippet_content=$(sed -e "s|__PATH_NOSLASH__|$path_noslash|g" -e "s|__PATH__|$SUBDIR_PATH|g" \
+                -e "s|__DOCROOT__|$(sed_escape "$sub_docroot")|g" "$NGINX_TEMPLATE_DIR/location_static.conf.template")
         fi
     fi
 

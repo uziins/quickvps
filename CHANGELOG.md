@@ -21,8 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `domain delete` removes every enabled symlink pointing at the config, whatever its name, and refuses to delete shared configs
 - On conf.d layouts (RHEL) configs without `.conf` are flagged as inactive, and `domain add --force` replaces them with `<domain>.conf`
 - `domain list` shows enabled/disabled status and the `server_name`s of each config
+- `domain add-subdir` normalizes the path to a trailing slash (fixes `//x` upstream paths, `/api` matching `/apikey`, and the `alias` path traversal), uses `location ^~` so regex locations of the main site do not capture the subpath, and redirects `/api` to `/api/`
+- PHP subdirectories no longer use `snippets/fastcgi-php.conf`, whose `try_files` breaks with `alias`
 
 ### Added
+- `--strip-prefix` / `--keep-prefix` for proxied subdirectories; `X-Forwarded-Prefix` is sent when the prefix is stripped
 - New flags: `--www`, `--ssl`, `--email`, `--force`, `--git-url`, `--node-port`, `--delete-root`, `--path`, `--sub-stack`, `--backup-file`, `--container`, `--listen-port`, `--destination`, `--ssl-domain`, `--help`
 - Database commands use socket auth for root when available (password otherwise passed via `MYSQL_PWD`, not the command line)
 

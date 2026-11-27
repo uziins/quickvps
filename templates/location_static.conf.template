@@ -1,4 +1,8 @@
-    location __PATH__ {
+    location = __PATH_NOSLASH__ {
+        return 301 __PATH__$is_args$args;
+    }
+
+    location ^~ __PATH__ {
         alias __DOCROOT__/;
         index index.html index.htm;
         try_files $uri $uri/ =404;

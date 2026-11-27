@@ -1,10 +1,17 @@
-    location __PATH__ {
+    location = __PATH_NOSLASH__ {
+        return 301 __PATH__$is_args$args;
+    }
+
+    location ^~ __PATH__ {
         alias __DOCROOT__/;
         index index.php index.html index.htm;
-        try_files $uri $uri/ __PATH__/index.php?$args;
+        try_files $uri $uri/ __PATH__index.php$is_args$args;
 
         location ~ \.php$ {
-            __FASTCGI_CONFIG__
+            # $request_filename resolves correctly with alias (snippets/fastcgi-php.conf does not)
+            if (!-f $request_filename) { return 404; }
+            include fastcgi_params;
             fastcgi_param SCRIPT_FILENAME $request_filename;
+            fastcgi_pass __FASTCGI_PASS__;
         }
     }

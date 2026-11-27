@@ -77,8 +77,10 @@ Options:
   --email <address>        Email for Let's Encrypt (used with --ssl)
   --force                  Overwrite an existing domain config
   --delete-root            (domain delete) Also delete the document root
-  --path <path>            (domain add-subdir) Location path, e.g. /api
+  --path <path>            (domain add-subdir) Location path, e.g. /api/ (trailing slash added automatically)
   --sub-stack <type>       (domain add-subdir) proxy | php | static
+  --strip-prefix           (add-subdir proxy) Backend gets /users for /api/users (default)
+  --keep-prefix            (add-subdir proxy) Backend gets /api/users unchanged
   --user <name>            System username
   --db-name / --db-user / --db-pass / --db-engine <mysql|mariadb>
   --backup-file <path>     (database restore) Backup file to restore
@@ -122,6 +124,8 @@ if [ "$#" -gt 0 ]; then
             --ssl) export ENABLE_SSL="y"; shift; continue ;;
             --force) export FORCE=1; shift; continue ;;
             --delete-root) export DELETE_ROOT="y"; shift; continue ;;
+            --strip-prefix) export STRIP_PREFIX="y"; shift; continue ;;
+            --keep-prefix) export STRIP_PREFIX="n"; shift; continue ;;
             -h|--help) usage; exit 0 ;;
         esac
         require_value "$1" "$2"
@@ -225,7 +229,7 @@ fi
 while true; do
     unset DOMAIN STACK_TYPE DOCROOT DOMAIN_OWNER USERNAME PROXY_PORT DB_NAME DB_USER DB_PASS DB_ENGINE \
           DOCKER_APP DOCKER_PORT NODE_PORT STACK_PORT WWW_DOMAIN ENABLE_WWW ENABLE_SSL GIT_URL FORCE \
-          DELETE_ROOT SUBDIR_PATH SUB_STACK CONTAINER_NAME LISTEN_PORT DESTINATION SSL_DOMAIN BACKUP_FILE SSL_EMAIL
+          DELETE_ROOT SUBDIR_PATH SUB_STACK STRIP_PREFIX CONTAINER_NAME LISTEN_PORT DESTINATION SSL_DOMAIN BACKUP_FILE SSL_EMAIL
     cd "$SCRIPT_DIR" || exit 1
     echo -e "${CYAN}========= QuickVPS Setup Menu =========${NC}"
     echo "1) Server Setup"

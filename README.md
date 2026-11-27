@@ -71,8 +71,9 @@ sudo ./setup.sh domain add --domain api.myapp.com --stack proxy --proxy-port 809
 # Example: Add a domain with www alias and Let's Encrypt SSL
 sudo ./setup.sh domain add --domain myapp.com --www --stack php --ssl --email admin@myapp.com --non-interactive
 
-# Example: Add a /api path proxied to port 9000 on an existing domain
-sudo ./setup.sh domain add-subdir --domain myapp.com --path /api --sub-stack proxy --proxy-port 9000 --non-interactive
+# Example: Same domain, different backends: / -> port 3000, /api/ -> port 8000
+sudo ./setup.sh domain add --domain myapp.com --stack proxy --proxy-port 3000 --non-interactive
+sudo ./setup.sh domain add-subdir --domain myapp.com --path /api/ --sub-stack proxy --proxy-port 8000 --keep-prefix --non-interactive
 
 # Example: Create a database (password is generated when --db-pass is omitted)
 sudo ./setup.sh database create --db-name app --db-user app --non-interactive
@@ -83,6 +84,11 @@ sudo ./setup.sh docker setup --docker-app n8n --docker-port 5678 --docroot /var/
 # Example: Automatically create a new user
 sudo ./setup.sh user add --user budi --non-interactive
 ```
+
+For `add-subdir`, the path always gets a trailing slash (`/api` becomes `/api/`), the location uses `^~`
+so the main site's regex locations (e.g. `\.php$`) cannot take over its requests, and `/api` redirects to `/api/`.
+With a proxy, `--strip-prefix` (default) forwards `/api/users` as `/users` and sends `X-Forwarded-Prefix: /api`;
+`--keep-prefix` forwards `/api/users` unchanged.
 
 Run `sudo ./setup.sh --help` for the full list of modules, actions and flags. In non-interactive mode
 optional questions are answered "no" (e.g. SSL is only requested with `--ssl`), and an existing domain
