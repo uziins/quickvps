@@ -1,0 +1,10 @@
+    location __PATH__ {
+        alias __DOCROOT__/;
+        index index.php index.html index.htm;
+        try_files $uri $uri/ __PATH__/index.php?$args;
+
+        location ~ \.php$ {
+            __FASTCGI_CONFIG__
+            fastcgi_param SCRIPT_FILENAME $request_filename;
+        }
+    }

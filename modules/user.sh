@@ -1,24 +1,37 @@
 #!/bin/bash
 
 create_user() {
-    read -rp "Enter new username: " USERNAME
+    if [[ -z "$USERNAME" ]]; then
+        read -rp "Enter new username: " USERNAME
+    fi
     if id "$USERNAME" &>/dev/null; then
         echo -e "${YELLOW}User '$USERNAME' already exists.${NC}"
     else
         echo -e "${CYAN}Creating user '$USERNAME'...${NC}"
         if confirm_action; then
-            adduser "$USERNAME"
+            if command -v adduser &>/dev/null && [[ "$OS_FAMILY" == "debian" ]]; then
+                adduser "$USERNAME"
+            else
+                useradd -m -s /bin/bash "$USERNAME"
+                passwd "$USERNAME"
+            fi
             echo -e "${GREEN}✅ User '$USERNAME' created.${NC}"
         fi
     fi
 }
 
 add_user_to_sudo() {
-    read -rp "Enter username to add to sudo group: " USERNAME
+    if [[ -z "$USERNAME" ]]; then
+        read -rp "Enter username to add to sudo group: " USERNAME
+    fi
     if id "$USERNAME" &>/dev/null; then
         echo -e "${CYAN}Adding '$USERNAME' to sudo group...${NC}"
         if confirm_action; then
-            usermod -aG sudo "$USERNAME"
+            if [[ "$OS_FAMILY" == "debian" ]]; then
+                usermod -aG sudo "$USERNAME"
+            else
+                usermod -aG wheel "$USERNAME"
+            fi
             echo -e "${GREEN}✅ User '$USERNAME' added to sudo group.${NC}"
         fi
     else

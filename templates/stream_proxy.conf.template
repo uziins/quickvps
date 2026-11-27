@@ -1,0 +1,4 @@
+server {
+    listen __LISTEN_PORT__;
+    proxy_pass __DESTINATION__;
+}

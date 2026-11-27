@@ -1,0 +1,5 @@
+    location __PATH__ {
+        alias __DOCROOT__/;
+        index index.html index.htm;
+        try_files $uri $uri/ =404;
+    }

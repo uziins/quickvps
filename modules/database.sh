@@ -20,24 +20,24 @@ install_mysql() {
     case $DB_ENGINE in
         1)
             echo -e "${CYAN}Installing MySQL 8.0...${NC}"
-            apt update
-            apt install -y mysql-server mysql-client
-            systemctl start mysql
-            systemctl enable mysql
+            $PKG_UPDATE
+            $PKG_INSTALL mysql-server mysql-client
+            systemctl start mysqld || systemctl start mysql
+            systemctl enable mysqld || systemctl enable mysql
             DB_TYPE="mysql"
             ;;
         2)
             echo -e "${CYAN}Installing MariaDB...${NC}"
-            apt update
-            apt install -y mariadb-server mariadb-client
+            $PKG_UPDATE
+            $PKG_INSTALL mariadb-server mariadb-client
             systemctl start mariadb
             systemctl enable mariadb
             DB_TYPE="mariadb"
             ;;
         *)
             echo -e "${YELLOW}Invalid option. Installing MariaDB as default...${NC}"
-            apt update
-            apt install -y mariadb-server mariadb-client
+            $PKG_UPDATE
+            $PKG_INSTALL mariadb-server mariadb-client
             systemctl start mariadb
             systemctl enable mariadb
             DB_TYPE="mariadb"
