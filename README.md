@@ -90,6 +90,29 @@ so the main site's regex locations (e.g. `\.php$`) cannot take over its requests
 With a proxy, `--strip-prefix` (default) forwards `/api/users` as `/users` and sends `X-Forwarded-Prefix: /api`;
 `--keep-prefix` forwards `/api/users` unchanged.
 
+### HTTP Basic Auth
+
+Protect a whole domain or a single path with a username/password (users are stored per domain in
+`/etc/nginx/htpasswd/<domain>`, hashed with SHA-512 crypt):
+
+```bash
+# Protect the whole domain; creates the first user (password is prompted, or generated with --non-interactive)
+sudo ./setup.sh auth enable --domain staging.myapp.com --user budi
+
+# Protect only an existing path (add it first with `domain add-subdir`)
+sudo ./setup.sh auth enable --domain myapp.com --path /admin/ --user budi
+
+# Manage users (set a known password from stdin instead of generating one)
+echo 'S3cret-pass' | sudo ./setup.sh auth add-user --domain myapp.com --user ani --pass-stdin --non-interactive
+sudo ./setup.sh auth delete-user --domain myapp.com --user ani
+sudo ./setup.sh auth status --domain myapp.com
+sudo ./setup.sh auth disable --domain myapp.com --path /admin/
+```
+
+Basic auth only base64-encodes credentials, so enabling it on a domain without HTTPS requires `--force`.
+Site-wide auth keeps `/.well-known/acme-challenge/` open for certificate renewals. Avoid it on APIs called
+from browsers: CORS preflight requests carry no credentials and would get a 401.
+
 Run `sudo ./setup.sh --help` for the full list of modules, actions and flags. In non-interactive mode
 optional questions are answered "no" (e.g. SSL is only requested with `--ssl`), and an existing domain
 config is only overwritten with `--force`.
@@ -128,6 +151,7 @@ QuickVPS/
 │   ├── user.sh              # User management
 │   ├── domain.sh            # Domain and stack setup
 │   ├── docker.sh            # Docker applications
+│   ├── auth.sh              # HTTP basic auth
 │   └── utils.sh             # Utility functions
 ├── templates/
 │   ├── nginx_*.conf.template # Nginx configuration templates

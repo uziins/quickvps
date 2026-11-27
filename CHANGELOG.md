@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `domain add-subdir` inserts the location into the HTTPS server block after Certbot has split the config
 - `docker setup` (standalone) no longer writes to `/docker-compose.yml`; it installs into a chosen directory and fills in the port
 - `install.sh` points at the real repository URL
+- Input variables are cleared at start-up, so environment values such as `USERNAME` (set by `sudo`) no longer skip prompts or pick the wrong user
 - Domain configs are found whether they are named `<domain>.conf`, `<domain>`, or only list the domain in `server_name`; ambiguous matches are reported instead of guessed
 - `domain add` reuses an existing `<domain>` config (no duplicate `<domain>.conf`) and refuses to overwrite a shared config holding other sites
 - `domain delete` removes every enabled symlink pointing at the config, whatever its name, and refuses to delete shared configs
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP subdirectories no longer use `snippets/fastcgi-php.conf`, whose `try_files` breaks with `alias`
 
 ### Added
+- `auth` module: `enable`/`disable` HTTP basic auth for a whole domain or one location path, `add-user`/`delete-user`/`status`; users stored per domain in `/etc/nginx/htpasswd/<domain>` (SHA-512 crypt via `openssl passwd -6`, password never on the command line), HTTPS check, ACME challenge exception, nginx test with rollback
 - `--strip-prefix` / `--keep-prefix` for proxied subdirectories; `X-Forwarded-Prefix` is sent when the prefix is stripped
 - New flags: `--www`, `--ssl`, `--email`, `--force`, `--git-url`, `--node-port`, `--delete-root`, `--path`, `--sub-stack`, `--backup-file`, `--container`, `--listen-port`, `--destination`, `--ssl-domain`, `--help`
 - Database commands use socket auth for root when available (password otherwise passed via `MYSQL_PWD`, not the command line)

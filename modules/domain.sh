@@ -704,6 +704,12 @@ delete_domain() {
     fi
 
     echo -e "${GREEN}✅ Domain $DOMAIN deleted.${NC}"
+    # HTTP auth users of this domain (see modules/auth.sh)
+    local auth_file="${AUTH_DIR:-/etc/nginx/htpasswd}/$DOMAIN"
+    if [ -f "$auth_file" ]; then
+        rm -f "$auth_file"
+        echo -e "${GREEN}✅ HTTP auth users removed: $auth_file${NC}"
+    fi
     if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
         echo -e "${YELLOW}ℹ️  The SSL certificate still exists. Remove it with: certbot delete --cert-name $DOMAIN${NC}"
     fi
@@ -776,6 +782,42 @@ setup_laravel_project() {
     echo -e "${GREEN}✅ Laravel project setup completed${NC}"
 }
 
+# Normalize the location path in the variable named $1 to exactly one trailing slash:
+# "/api", "/api/" and "/api//" all become "/api/". Without it, "location /api" + alias or
+# proxy_pass ".../" maps /api/x to //x, also matches /apikey, and with alias allows /api../
+# to escape the directory. Prints an error and returns 1 for invalid paths.
+normalize_location_path() {
+    local __var="$1" __p="${!1}"
+    while [[ "$__p" == */ && "$__p" != "/" ]]; do
+        __p="${__p%/}"
+    done
+    if [[ ! "$__p" =~ ^(/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)+$ ]] || [[ "$__p" =~ /\.\.?(/|$) ]]; then
+        echo -e "${RED}❌ Invalid path. Use something like /api or /blog/v1 (letters, digits, . _ ~ -; not / alone).${NC}"
+        return 1
+    fi
+    printf -v "$__var" '%s/' "$__p"
+}
+
+# Print the line number of the opening line of the server block that should receive
+# site-wide changes: the HTTPS one (listen ... 443) if present, otherwise the first.
+find_target_server_block() {
+    awk '
+        function count(s, re,   t) { t = s; return gsub(re, "", t) }
+        {
+            line = $0; sub(/#.*/, "", line)
+            if (depth == 0 && !inblk && line ~ /^[ \t]*server[ \t]*(\{.*)?$/) { inblk = 1; has443 = 0; open = 0 }
+            if (inblk && line ~ /^[ \t]*listen[ \t].*443/) has443 = 1
+            depth += count(line, "[{]") - count(line, "[}]")
+            if (inblk && !open && depth >= 1) open = NR
+            if (inblk && depth == 0 && line ~ /[}]/) { inblk = 0; n++; opens[n] = open; ssl[n] = has443 }
+        }
+        END {
+            for (i = 1; i <= n; i++) if (ssl[i]) { print opens[i]; exit }
+            if (n) print opens[1]; else exit 1
+        }
+    ' "$1"
+}
+
 # Insert the snippet file $2 into nginx config $1, inside the HTTPS server block
 # (one with "listen ... 443") if present, otherwise the first server block.
 insert_location_snippet() {
@@ -817,18 +859,8 @@ add_subdirectory() {
     resolve_domain_config config_path "$DOMAIN" || return 1
 
     prompt_value SUBDIR_PATH "Enter subdirectory path (e.g. /api/ or /blog/)"
-    # Normalize to exactly one trailing slash: "/api", "/api/" and "/api//" all become "/api/".
-    # Without it, "location /api" + alias/proxy_pass ".../" maps /api/x to //x, also matches
-    # /apikey, and with alias allows /api../ to escape the directory.
-    while [[ "$SUBDIR_PATH" == */ && "$SUBDIR_PATH" != "/" ]]; do
-        SUBDIR_PATH="${SUBDIR_PATH%/}"
-    done
-    if [[ ! "$SUBDIR_PATH" =~ ^(/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)+$ ]] || [[ "$SUBDIR_PATH" =~ /\.\.?(/|$) ]]; then
-        echo -e "${RED}❌ Invalid path. Use something like /api or /blog/v1 (letters, digits, . _ ~ -; not / alone).${NC}"
-        return 1
-    fi
-    local path_noslash="$SUBDIR_PATH"
-    SUBDIR_PATH="$SUBDIR_PATH/"
+    normalize_location_path SUBDIR_PATH || return 1
+    local path_noslash="${SUBDIR_PATH%/}"
     local path_re="${path_noslash//./\\.}"
     if grep -qE "^[[:space:]]*location[[:space:]]+(\^~[[:space:]]+|=[[:space:]]+)?$path_re/?[[:space:]]*\{" "$config_path"; then
         echo -e "${RED}❌ A location for $SUBDIR_PATH already exists in $config_path.${NC}"

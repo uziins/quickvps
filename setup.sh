@@ -47,6 +47,7 @@ source "$SCRIPT_DIR/modules/domain.sh"
 source "$SCRIPT_DIR/modules/docker.sh"
 source "$SCRIPT_DIR/modules/database.sh"
 source "$SCRIPT_DIR/modules/tcp_proxy.sh"
+source "$SCRIPT_DIR/modules/auth.sh"
 
 usage() {
     cat <<EOF
@@ -61,6 +62,7 @@ Modules and actions:
   docker    setup | restart | remove | status
   database  install | create | list | delete | backup | restore | optimize | status
   tcp       add | delete | list
+  auth      enable | disable | add-user | delete-user | status
 
 Options:
   --non-interactive        Never prompt; use flags/defaults, answer "no" to optional questions
@@ -77,11 +79,12 @@ Options:
   --email <address>        Email for Let's Encrypt (used with --ssl)
   --force                  Overwrite an existing domain config
   --delete-root            (domain delete) Also delete the document root
-  --path <path>            (domain add-subdir) Location path, e.g. /api/ (trailing slash added automatically)
+  --path <path>            (domain add-subdir, auth) Location path, e.g. /api/ (trailing slash added automatically)
   --sub-stack <type>       (domain add-subdir) proxy | php | static
   --strip-prefix           (add-subdir proxy) Backend gets /users for /api/users (default)
   --keep-prefix            (add-subdir proxy) Backend gets /api/users unchanged
-  --user <name>            System username
+  --user <name>            System username, or HTTP auth username (auth module)
+  --pass-stdin             (auth) Read the user's password from stdin instead of generating one
   --db-name / --db-user / --db-pass / --db-engine <mysql|mariadb>
   --backup-file <path>     (database restore) Backup file to restore
   --docker-app <name>      Docker template name (e.g. n8n, ghost)
@@ -93,6 +96,16 @@ Options:
   -h, --help               Show this help
 EOF
 }
+
+# Variables filled from flags/prompts. Clear them first: some come from the environment
+# (sudo and login shells set USERNAME, for example), which would silently skip prompts.
+reset_input_vars() {
+    unset DOMAIN STACK_TYPE DOCROOT DOMAIN_OWNER USERNAME PROXY_PORT DB_NAME DB_USER DB_PASS DB_ENGINE \
+          DOCKER_APP DOCKER_PORT NODE_PORT STACK_PORT WWW_DOMAIN ENABLE_WWW ENABLE_SSL GIT_URL FORCE \
+          DELETE_ROOT SUBDIR_PATH SUB_STACK STRIP_PREFIX PASS_STDIN CONTAINER_NAME LISTEN_PORT DESTINATION \
+          SSL_DOMAIN BACKUP_FILE SSL_EMAIL
+}
+reset_input_vars
 
 # Parse CLI arguments
 NON_INTERACTIVE=0
@@ -126,6 +139,7 @@ if [ "$#" -gt 0 ]; then
             --delete-root) export DELETE_ROOT="y"; shift; continue ;;
             --strip-prefix) export STRIP_PREFIX="y"; shift; continue ;;
             --keep-prefix) export STRIP_PREFIX="n"; shift; continue ;;
+            --pass-stdin) export PASS_STDIN=1; shift; continue ;;
             -h|--help) usage; exit 0 ;;
         esac
         require_value "$1" "$2"
@@ -216,9 +230,19 @@ if [ "$#" -gt 0 ]; then
                 *) echo -e "${RED}Unknown TCP action: $ACTION${NC}"; exit 1 ;;
             esac
             ;;
+        auth)
+            case $ACTION in
+                enable) auth_enable ;;
+                disable) auth_disable ;;
+                add-user) auth_add_user ;;
+                delete-user) auth_delete_user ;;
+                status) auth_status ;;
+                *) echo -e "${RED}Unknown auth action: $ACTION${NC}"; exit 1 ;;
+            esac
+            ;;
         *)
             echo -e "${RED}Unknown module: $MODULE${NC}"
-            echo "Available modules: server, domain, user, docker, database, tcp"
+            echo "Available modules: server, domain, user, docker, database, tcp, auth"
             exit 1
             ;;
     esac
@@ -227,9 +251,7 @@ fi
 
 # Main menu (fallback)
 while true; do
-    unset DOMAIN STACK_TYPE DOCROOT DOMAIN_OWNER USERNAME PROXY_PORT DB_NAME DB_USER DB_PASS DB_ENGINE \
-          DOCKER_APP DOCKER_PORT NODE_PORT STACK_PORT WWW_DOMAIN ENABLE_WWW ENABLE_SSL GIT_URL FORCE \
-          DELETE_ROOT SUBDIR_PATH SUB_STACK STRIP_PREFIX CONTAINER_NAME LISTEN_PORT DESTINATION SSL_DOMAIN BACKUP_FILE SSL_EMAIL
+    reset_input_vars
     cd "$SCRIPT_DIR" || exit 1
     echo -e "${CYAN}========= QuickVPS Setup Menu =========${NC}"
     echo "1) Server Setup"
@@ -238,8 +260,9 @@ while true; do
     echo "4) Docker Management"
     echo "5) Database Management"
     echo "6) TCP/Stream Proxy Management"
-    echo "7) Exit"
-    read -rp "Select an option [1-7]: " MAIN_OPTION
+    echo "7) HTTP Basic Auth"
+    echo "8) Exit"
+    read -rp "Select an option [1-8]: " MAIN_OPTION
     case $MAIN_OPTION in
         1) show_server_menu ;;
         2) show_user_menu ;;
@@ -247,7 +270,8 @@ while true; do
         4) show_docker_menu ;;
         5) show_database_menu ;;
         6) show_tcp_menu ;;
-        7) echo -e "${GREEN}Goodbye!${NC}"; break ;;
-        *) echo -e "${YELLOW}Invalid option. Please select 1-7.${NC}" ;;
+        7) show_auth_menu ;;
+        8) echo -e "${GREEN}Goodbye!${NC}"; break ;;
+        *) echo -e "${YELLOW}Invalid option. Please select 1-8.${NC}" ;;
     esac
 done
