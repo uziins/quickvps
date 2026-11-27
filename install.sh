@@ -5,7 +5,7 @@
 
 set -e
 
-REPO_URL="https://github.com/yourusername/QuickVPS.git"
+REPO_URL="${QUICKVPS_REPO_URL:-https://github.com/uziins/quickvps.git}"
 INSTALL_DIR="/opt/quickvps"
 
 echo "🚀 QuickVPS Installer"
@@ -37,7 +37,7 @@ cd "$INSTALL_DIR"
 echo "⬇️  Downloading QuickVPS..."
 if [[ -d ".git" ]]; then
     echo "📦 Updating existing installation..."
-    git pull
+    git pull --ff-only
 else
     echo "🔄 Fresh installation..."
     git clone "$REPO_URL" .
@@ -56,4 +56,4 @@ echo "🎯 Usage:"
 echo "  quickvps          # Run from anywhere"
 echo "  cd $INSTALL_DIR && ./setup.sh  # Run from install directory"
 echo ""
-echo "📖 Documentation: https://github.com/yourusername/QuickVPS"
+echo "📖 Documentation: https://github.com/uziins/quickvps"

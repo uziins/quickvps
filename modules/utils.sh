@@ -56,6 +56,89 @@ detect_os() {
 # Run OS Detection
 detect_os
 
+# Read a value into the variable named $1 unless it is already set.
+# In non-interactive mode the default ($3) is used instead of prompting.
+# Returns 1 if the variable is still empty afterwards.
+prompt_value() {
+    local __var="$1" __prompt="$2" __default="${3:-}" __input=""
+    if [[ -n "${!__var}" ]]; then
+        return 0
+    fi
+    if [[ "$NON_INTERACTIVE" != "1" ]]; then
+        if [[ -n "$__default" ]]; then
+            read -rp "$__prompt [default: $__default]: " __input
+        else
+            read -rp "$__prompt: " __input
+        fi
+    fi
+    printf -v "$__var" '%s' "${__input:-$__default}"
+    [[ -n "${!__var}" ]]
+}
+
+# Yes/no question. Usage: ask_yes_no "Question" <default y|n> [preset answer]
+# A preset (usually from a CLI flag) wins; non-interactive mode uses the default.
+ask_yes_no() {
+    local prompt="$1" default="${2:-n}" answer="${3:-}" hint="[y/N]"
+    [[ "$default" =~ ^[Yy]$ ]] && hint="[Y/n]"
+    if [[ -z "$answer" ]]; then
+        if [[ "$NON_INTERACTIVE" == "1" ]]; then
+            answer="$default"
+        else
+            read -rp "$prompt $hint: " answer
+            answer="${answer:-$default}"
+        fi
+    fi
+    [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+validate_domain() {
+    [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]]
+}
+
+validate_port() {
+    [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
+}
+
+# Escape a string for use as the replacement part of sed "s|...|...|"
+sed_escape() {
+    printf '%s' "$1" | sed -e 's/[\\|&]/\\&/g'
+}
+
+# Refuse to operate recursively on system or top-level directories.
+is_safe_path() {
+    local path
+    path=$(realpath -m "$1" 2>/dev/null) || return 1
+    [[ -z "$path" || "$path" != /* ]] && return 1
+
+    local base
+    base=$(realpath -m "${DEFAULT_DOCROOT_BASE:-/var/www}")
+    case "$path" in
+        /|/bin|/boot|/dev|/etc|/home|/lib|/lib32|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var|/var/www|/var/lib|/var/log|/var/cache|/var/spool|/var/mail|/snap)
+            return 1 ;;
+        /bin/*|/boot/*|/dev/*|/etc/*|/lib/*|/lib32/*|/lib64/*|/proc/*|/run/*|/sbin/*|/sys/*|/usr/*|/var/lib/*|/var/log/*|/var/cache/*|/var/spool/*|/root/*|/snap/*)
+            return 1 ;;
+    esac
+    [[ "$path" == "$base" ]] && return 1
+    # A user's home directory itself (/home/<user>) is not a docroot
+    [[ "$path" =~ ^/home/[^/]+$ ]] && return 1
+    return 0
+}
+
+# Test nginx config and reload. On failure, run the given rollback command.
+nginx_test_and_reload() {
+    local rollback="${1:-}"
+    if nginx -t; then
+        systemctl reload nginx
+        return 0
+    fi
+    if [[ -n "$rollback" ]]; then
+        echo -e "${YELLOW}Rolling back configuration change...${NC}"
+        eval "$rollback"
+        nginx -t &>/dev/null && systemctl reload nginx
+    fi
+    return 1
+}
+
 # Confirmation prompt
 confirm_action() {
     if [[ "$NON_INTERACTIVE" == "1" ]]; then
@@ -92,7 +175,8 @@ get_smart_owner() {
         check_dir=$(dirname "$check_dir")
     done
     
-    local parent_owner=$(stat -c '%U' "$check_dir" 2>/dev/null)
+    local parent_owner
+    parent_owner=$(stat -c '%U' "$check_dir" 2>/dev/null)
     if [ -z "$parent_owner" ] || [ "$parent_owner" == "root" ]; then
         echo "$WEB_USER"
     else

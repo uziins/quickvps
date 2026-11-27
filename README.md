@@ -68,9 +68,25 @@ sudo ./setup.sh domain add --domain myapp.com --stack laravel --php 8.3 --docroo
 # Example: Automatically add a reverse proxy (e.g. for Python/Go app)
 sudo ./setup.sh domain add --domain api.myapp.com --stack proxy --proxy-port 8090 --non-interactive
 
+# Example: Add a domain with www alias and Let's Encrypt SSL
+sudo ./setup.sh domain add --domain myapp.com --www --stack php --ssl --email admin@myapp.com --non-interactive
+
+# Example: Add a /api path proxied to port 9000 on an existing domain
+sudo ./setup.sh domain add-subdir --domain myapp.com --path /api --sub-stack proxy --proxy-port 9000 --non-interactive
+
+# Example: Create a database (password is generated when --db-pass is omitted)
+sudo ./setup.sh database create --db-name app --db-user app --non-interactive
+
+# Example: Deploy the n8n Docker template
+sudo ./setup.sh docker setup --docker-app n8n --docker-port 5678 --docroot /var/www/n8n --non-interactive
+
 # Example: Automatically create a new user
 sudo ./setup.sh user add --user budi --non-interactive
 ```
+
+Run `sudo ./setup.sh --help` for the full list of modules, actions and flags. In non-interactive mode
+optional questions are answered "no" (e.g. SSL is only requested with `--ssl`), and an existing domain
+config is only overwritten with `--force`.
 
 ### Stack Types Supported
 

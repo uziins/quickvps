@@ -3,6 +3,45 @@
 # Database Management Module for QuickVPS
 # Supports MySQL/MariaDB installation, configuration, and management
 
+# Run the mysql/mysqldump client as the DB root user.
+# Uses unix_socket auth when available (default on Ubuntu/Debian when run as root);
+# otherwise asks for the root password once and passes it via MYSQL_PWD (not argv).
+DB_ROOT_AUTH_OK=0
+db_root_auth() {
+    if [[ "$DB_ROOT_AUTH_OK" == "1" ]]; then
+        return 0
+    fi
+    if mysql -u root -e "SELECT 1" &>/dev/null; then
+        DB_ROOT_AUTH_OK=1
+        return 0
+    fi
+    local pass="${MYSQL_ROOT_PASSWORD:-}"
+    if [[ -z "$pass" ]]; then
+        if [[ "$NON_INTERACTIVE" == "1" ]]; then
+            echo -e "${RED}❌ Cannot log in as DB root via socket. Set MYSQL_ROOT_PASSWORD in the environment.${NC}"
+            return 1
+        fi
+        read -rsp "Enter MySQL/MariaDB root password: " pass
+        echo
+    fi
+    if ! MYSQL_PWD="$pass" mysql -u root -e "SELECT 1" &>/dev/null; then
+        echo -e "${RED}❌ Could not log in as DB root. Check the password.${NC}"
+        return 1
+    fi
+    export MYSQL_PWD="$pass"
+    DB_ROOT_AUTH_OK=1
+}
+
+db_root() {
+    mysql -u root "$@"
+}
+
+# Escape a value for use inside a single-quoted SQL string
+sql_escape() {
+    local v="${1//\\/\\\\}"
+    printf '%s' "${v//\'/\\\'}"
+}
+
 install_mysql() {
     echo -e "${CYAN}Installing MySQL/MariaDB...${NC}"
 
@@ -12,13 +51,15 @@ install_mysql() {
         return
     fi
 
-    echo -e "${CYAN}Select database engine:${NC}"
-    echo "1) MySQL 8.0"
-    echo "2) MariaDB (Recommended)"
-    read -rp "Choose database engine [1-2]: " DB_ENGINE
+    if [[ -z "$DB_ENGINE" && "$NON_INTERACTIVE" != "1" ]]; then
+        echo -e "${CYAN}Select database engine:${NC}"
+        echo "1) MySQL 8.0"
+        echo "2) MariaDB (Recommended)"
+        read -rp "Choose database engine [1-2]: " DB_ENGINE
+    fi
 
     case $DB_ENGINE in
-        1)
+        1|mysql)
             echo -e "${CYAN}Installing MySQL 8.0...${NC}"
             $PKG_UPDATE
             $PKG_INSTALL mysql-server mysql-client
@@ -26,16 +67,11 @@ install_mysql() {
             systemctl enable mysqld || systemctl enable mysql
             DB_TYPE="mysql"
             ;;
-        2)
-            echo -e "${CYAN}Installing MariaDB...${NC}"
-            $PKG_UPDATE
-            $PKG_INSTALL mariadb-server mariadb-client
-            systemctl start mariadb
-            systemctl enable mariadb
-            DB_TYPE="mariadb"
-            ;;
         *)
-            echo -e "${YELLOW}Invalid option. Installing MariaDB as default...${NC}"
+            if [[ -n "$DB_ENGINE" && "$DB_ENGINE" != "2" && "$DB_ENGINE" != "mariadb" ]]; then
+                echo -e "${YELLOW}Invalid option. Installing MariaDB as default...${NC}"
+            fi
+            echo -e "${CYAN}Installing MariaDB...${NC}"
             $PKG_UPDATE
             $PKG_INSTALL mariadb-server mariadb-client
             systemctl start mariadb
@@ -46,9 +82,8 @@ install_mysql() {
 
     echo -e "${GREEN}✅ $DB_TYPE installed successfully${NC}"
 
-    # Secure installation
-    read -rp "Run secure installation? [Y/n]: " SECURE_INSTALL
-    if [[ ! "$SECURE_INSTALL" =~ ^[Nn]$ ]]; then
+    # Secure installation is interactive by nature; skipped in non-interactive mode
+    if [[ "$NON_INTERACTIVE" != "1" ]] && ask_yes_no "Run secure installation?" y; then
         echo -e "${CYAN}Running secure installation...${NC}"
         if [[ "$DB_TYPE" == "mysql" ]]; then
             mysql_secure_installation
@@ -69,58 +104,57 @@ create_database() {
         return 1
     fi
 
-    read -rp "Enter database name: " DB_NAME
+    prompt_value DB_NAME "Enter database name"
     if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
         echo -e "${RED}❌ Invalid database name. Use only letters, numbers, and underscores.${NC}"
         return 1
     fi
 
-    read -rp "Enter database username: " DB_USER
+    prompt_value DB_USER "Enter database username"
     if [[ ! "$DB_USER" =~ ^[a-zA-Z0-9_]+$ ]]; then
         echo -e "${RED}❌ Invalid username. Use only letters, numbers, and underscores.${NC}"
         return 1
     fi
 
-    # Generate or ask for password
-    echo -e "${CYAN}Password options:${NC}"
-    echo "1) Generate random password"
-    echo "2) Enter custom password"
-    read -rp "Choose password option [1-2]: " PASS_OPTION
-
-    case $PASS_OPTION in
-        1)
-            DB_PASS=$(openssl rand -base64 16)
-            echo -e "${GREEN}Generated password: $DB_PASS${NC}"
-            ;;
-        2)
-            read -rsp "Enter password: " DB_PASS
-            echo
-            read -rsp "Confirm password: " DB_PASS_CONFIRM
-            echo
-            if [[ "$DB_PASS" != "$DB_PASS_CONFIRM" ]]; then
-                echo -e "${RED}❌ Passwords do not match${NC}"
+    if [[ -z "$DB_PASS" ]]; then
+        local pass_option="1"
+        if [[ "$NON_INTERACTIVE" != "1" ]]; then
+            echo -e "${CYAN}Password options:${NC}"
+            echo "1) Generate random password"
+            echo "2) Enter custom password"
+            read -rp "Choose password option [1-2]: " pass_option
+        fi
+        case $pass_option in
+            1)
+                DB_PASS=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)
+                echo -e "${GREEN}Generated password: $DB_PASS${NC}"
+                ;;
+            2)
+                local confirm
+                read -rsp "Enter password: " DB_PASS
+                echo
+                read -rsp "Confirm password: " confirm
+                echo
+                if [[ "$DB_PASS" != "$confirm" ]]; then
+                    echo -e "${RED}❌ Passwords do not match${NC}"
+                    return 1
+                fi
+                ;;
+            *)
+                echo -e "${RED}❌ Invalid option${NC}"
                 return 1
-            fi
-            ;;
-        *)
-            echo -e "${RED}❌ Invalid option${NC}"
-            return 1
-            ;;
-    esac
+                ;;
+        esac
+    fi
 
-    # Get root password
-    read -rsp "Enter MySQL/MariaDB root password: " ROOT_PASS
-    echo
+    db_root_auth || return 1
 
-    # Create database and user
-    mysql -u root -p"$ROOT_PASS" -e "
+    if db_root -e "
         CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-        CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
+        CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$(sql_escape "$DB_PASS")';
         GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
         FLUSH PRIVILEGES;
-    " 2>/dev/null
-
-    if [[ $? -eq 0 ]]; then
+    "; then
         echo -e "${GREEN}✅ Database created successfully${NC}"
         echo -e "${CYAN}Database details:${NC}"
         echo "  Database: $DB_NAME"
@@ -128,9 +162,11 @@ create_database() {
         echo "  Password: $DB_PASS"
         echo "  Host: localhost"
 
-        # Save to file
+        # Save to file (readable by root only)
         DB_INFO_FILE="/root/db_credentials_$DB_NAME.txt"
-        cat > "$DB_INFO_FILE" << EOF
+        (
+            umask 077
+            cat > "$DB_INFO_FILE" << EOF
 Database Credentials for $DB_NAME
 ================================
 Database: $DB_NAME
@@ -140,7 +176,7 @@ Host: localhost
 Port: 3306
 
 Connection String Examples:
-MySQL CLI: mysql -u $DB_USER -p'$DB_PASS' $DB_NAME
+MySQL CLI: mysql -u $DB_USER -p $DB_NAME
 Laravel .env:
   DB_CONNECTION=mysql
   DB_HOST=127.0.0.1
@@ -151,68 +187,65 @@ Laravel .env:
 
 Created: $(date)
 EOF
+        )
         echo -e "${GREEN}✅ Credentials saved to: $DB_INFO_FILE${NC}"
         log "Database $DB_NAME created for user $DB_USER"
     else
-        echo -e "${RED}❌ Failed to create database. Please check root password and try again.${NC}"
+        echo -e "${RED}❌ Failed to create database.${NC}"
         return 1
     fi
 }
 
 list_databases() {
     echo -e "${CYAN}Listing databases...${NC}"
-
-    read -rsp "Enter MySQL/MariaDB root password: " ROOT_PASS
-    echo
+    db_root_auth || return 1
 
     echo -e "${CYAN}Databases:${NC}"
-    mysql -u root -p"$ROOT_PASS" -e "SHOW DATABASES;" 2>/dev/null | grep -v "information_schema\|performance_schema\|mysql\|sys\|Database"
+    db_root -N -e "SHOW DATABASES;" | grep -vxE "information_schema|performance_schema|mysql|sys"
 
     echo -e "\n${CYAN}Users:${NC}"
-    mysql -u root -p"$ROOT_PASS" -e "SELECT User, Host FROM mysql.user WHERE User != 'root' AND User != 'debian-sys-maint' AND User != 'mysql.session' AND User != 'mysql.sys';" 2>/dev/null
+    db_root -e "SELECT User, Host FROM mysql.user WHERE User NOT IN ('root', 'debian-sys-maint', 'mysql.session', 'mysql.sys', 'mysql.infoschema', 'mariadb.sys');"
 }
 
 delete_database() {
     echo -e "${CYAN}Deleting database...${NC}"
     echo -e "${RED}⚠️  WARNING: This action cannot be undone!${NC}"
 
-    read -rp "Enter database name to delete: " DB_NAME
-    if [[ -z "$DB_NAME" ]]; then
-        echo -e "${RED}❌ Database name cannot be empty${NC}"
+    prompt_value DB_NAME "Enter database name to delete"
+    if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        echo -e "${RED}❌ Invalid database name.${NC}"
         return 1
     fi
 
-    read -rp "Enter database username to delete: " DB_USER
-
-    read -rp "Are you sure you want to delete database '$DB_NAME' and user '$DB_USER'? [y/N]: " CONFIRM
-    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}Operation cancelled${NC}"
-        return
+    if [[ -z "$DB_USER" && "$NON_INTERACTIVE" != "1" ]]; then
+        read -rp "Enter database username to delete (leave blank to keep users): " DB_USER
+    fi
+    if [[ -n "$DB_USER" && ! "$DB_USER" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        echo -e "${RED}❌ Invalid username.${NC}"
+        return 1
     fi
 
-    read -rsp "Enter MySQL/MariaDB root password: " ROOT_PASS
-    echo
+    echo -e "${RED}Database '$DB_NAME'${DB_USER:+ and user '$DB_USER'} will be deleted.${NC}"
+    confirm_action || return 1
 
-    # Delete database and user
-    mysql -u root -p"$ROOT_PASS" -e "
-        DROP DATABASE IF EXISTS \`$DB_NAME\`;
-        DROP USER IF EXISTS '$DB_USER'@'localhost';
-        FLUSH PRIVILEGES;
-    " 2>/dev/null
+    db_root_auth || return 1
 
-    if [[ $? -eq 0 ]]; then
-        echo -e "${GREEN}✅ Database '$DB_NAME' and user '$DB_USER' deleted successfully${NC}"
+    local sql="DROP DATABASE IF EXISTS \`$DB_NAME\`;"
+    [[ -n "$DB_USER" ]] && sql+=" DROP USER IF EXISTS '$DB_USER'@'localhost';"
+    sql+=" FLUSH PRIVILEGES;"
 
-        # Remove credentials file if exists
+    if db_root -e "$sql"; then
+        echo -e "${GREEN}✅ Database '$DB_NAME'${DB_USER:+ and user '$DB_USER'} deleted successfully${NC}"
+
         DB_INFO_FILE="/root/db_credentials_$DB_NAME.txt"
         if [[ -f "$DB_INFO_FILE" ]]; then
-            rm "$DB_INFO_FILE"
+            rm -f "$DB_INFO_FILE"
             echo -e "${GREEN}✅ Credentials file removed${NC}"
         fi
 
-        log "Database $DB_NAME and user $DB_USER deleted"
+        log "Database $DB_NAME deleted (user: ${DB_USER:-none})"
     else
-        echo -e "${RED}❌ Failed to delete database. Please check root password and database name.${NC}"
+        echo -e "${RED}❌ Failed to delete database.${NC}"
         return 1
     fi
 }
@@ -220,38 +253,32 @@ delete_database() {
 backup_database() {
     echo -e "${CYAN}Creating database backup...${NC}"
 
-    read -rp "Enter database name to backup: " DB_NAME
-    if [[ -z "$DB_NAME" ]]; then
-        echo -e "${RED}❌ Database name cannot be empty${NC}"
+    prompt_value DB_NAME "Enter database name to backup"
+    if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        echo -e "${RED}❌ Invalid database name.${NC}"
         return 1
     fi
 
-    read -rp "Enter database username: " DB_USER
-    read -rsp "Enter database password: " DB_PASS
-    echo
+    db_root_auth || return 1
 
-    # Create backup directory
     BACKUP_DIR="/root/db_backups"
     mkdir -p "$BACKUP_DIR"
+    chmod 700 "$BACKUP_DIR"
 
-    # Generate backup filename with timestamp
-    BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_$(date +%Y%m%d_%H%M%S).sql"
+    local backup_file
+    backup_file="$BACKUP_DIR/${DB_NAME}_$(date +%Y%m%d_%H%M%S).sql.gz"
 
     echo -e "${CYAN}Creating backup...${NC}"
-    mysqldump -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" > "$BACKUP_FILE" 2>/dev/null
-
-    if [[ $? -eq 0 ]]; then
-        # Compress backup
-        gzip "$BACKUP_FILE"
-        BACKUP_FILE="${BACKUP_FILE}.gz"
-
+    mysqldump -u root --single-transaction --routines --triggers "$DB_NAME" | gzip > "$backup_file"
+    if [[ "${PIPESTATUS[0]}" -eq 0 ]]; then
+        chmod 600 "$backup_file"
         echo -e "${GREEN}✅ Database backup created successfully${NC}"
-        echo "  File: $BACKUP_FILE"
-        echo "  Size: $(du -h "$BACKUP_FILE" | cut -f1)"
-
-        log "Database $DB_NAME backed up to $BACKUP_FILE"
+        echo "  File: $backup_file"
+        echo "  Size: $(du -h "$backup_file" | cut -f1)"
+        log "Database $DB_NAME backed up to $backup_file"
     else
-        echo -e "${RED}❌ Failed to create backup. Please check credentials and database name.${NC}"
+        rm -f -- "$backup_file"
+        echo -e "${RED}❌ Failed to create backup. Please check the database name.${NC}"
         return 1
     fi
 }
@@ -259,55 +286,55 @@ backup_database() {
 restore_database() {
     echo -e "${CYAN}Restoring database from backup...${NC}"
 
-    # List available backups
     BACKUP_DIR="/root/db_backups"
-    if [[ -d "$BACKUP_DIR" ]] && [[ -n "$(ls -A "$BACKUP_DIR" 2>/dev/null)" ]]; then
-        echo -e "${CYAN}Available backups:${NC}"
-        ls -la "$BACKUP_DIR"/*.sql.gz 2>/dev/null | awk '{print $9, $5, $6, $7, $8}' | sed 's|.*/||'
-    else
-        echo -e "${YELLOW}No backups found in $BACKUP_DIR${NC}"
+    if [[ -z "$BACKUP_FILE" && "$NON_INTERACTIVE" != "1" ]]; then
+        if compgen -G "$BACKUP_DIR/*.sql*" >/dev/null; then
+            echo -e "${CYAN}Available backups:${NC}"
+            ls -lh "$BACKUP_DIR"/*.sql* | awk '{print $9, $5, $6, $7, $8}'
+        else
+            echo -e "${YELLOW}No backups found in $BACKUP_DIR${NC}"
+        fi
     fi
 
-    read -rp "Enter full path to backup file: " BACKUP_FILE
+    prompt_value BACKUP_FILE "Enter full path to backup file"
     if [[ ! -f "$BACKUP_FILE" ]]; then
         echo -e "${RED}❌ Backup file not found: $BACKUP_FILE${NC}"
         return 1
     fi
 
-    read -rp "Enter target database name: " DB_NAME
-    read -rp "Enter database username: " DB_USER
-    read -rsp "Enter database password: " DB_PASS
-    echo
-
-    read -rp "This will overwrite existing data in '$DB_NAME'. Continue? [y/N]: " CONFIRM
-    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}Operation cancelled${NC}"
-        return
+    prompt_value DB_NAME "Enter target database name"
+    if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        echo -e "${RED}❌ Invalid database name.${NC}"
+        return 1
     fi
+
+    echo -e "${RED}This will overwrite existing data in '$DB_NAME'.${NC}"
+    confirm_action || return 1
+
+    db_root_auth || return 1
+    db_root -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || return 1
 
     echo -e "${CYAN}Restoring database...${NC}"
-
-    # Check if file is compressed
+    local status
     if [[ "$BACKUP_FILE" == *.gz ]]; then
-        zcat "$BACKUP_FILE" | mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" 2>/dev/null
+        zcat "$BACKUP_FILE" | db_root "$DB_NAME"
+        status=$(( PIPESTATUS[0] | PIPESTATUS[1] ))
     else
-        mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" < "$BACKUP_FILE" 2>/dev/null
+        db_root "$DB_NAME" < "$BACKUP_FILE"
+        status=$?
     fi
 
-    if [[ $? -eq 0 ]]; then
+    if [[ "$status" -eq 0 ]]; then
         echo -e "${GREEN}✅ Database restored successfully${NC}"
         log "Database $DB_NAME restored from $BACKUP_FILE"
     else
-        echo -e "${RED}❌ Failed to restore database. Please check credentials and backup file.${NC}"
+        echo -e "${RED}❌ Failed to restore database. Please check the backup file.${NC}"
         return 1
     fi
 }
 
 optimize_database() {
     echo -e "${CYAN}Optimizing database performance...${NC}"
-
-    read -rsp "Enter MySQL/MariaDB root password: " ROOT_PASS
-    echo
 
     # Create optimized configuration
     CONFIG_FILE="/etc/mysql/conf.d/99-quickvps-optimization.cnf"
@@ -362,8 +389,7 @@ EOF
     echo -e "${GREEN}✅ Optimization configuration created: $CONFIG_FILE${NC}"
 
     # Restart MySQL/MariaDB
-    read -rp "Restart MySQL/MariaDB to apply optimizations? [Y/n]: " RESTART
-    if [[ ! "$RESTART" =~ ^[Nn]$ ]]; then
+    if ask_yes_no "Restart MySQL/MariaDB to apply optimizations?" y; then
         if systemctl restart mysql 2>/dev/null || systemctl restart mariadb 2>/dev/null; then
             echo -e "${GREEN}✅ Database service restarted successfully${NC}"
         else

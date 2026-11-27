@@ -6,15 +6,13 @@ NGINX_STREAM_DIR="/etc/nginx/stream-available"
 NGINX_STREAM_ENABLED_DIR="/etc/nginx/stream-enabled"
 
 setup_nginx_stream_module() {
-    # Check if stream directory exists
-    if [ ! -d "$NGINX_STREAM_DIR" ]; then
-        mkdir -p "$NGINX_STREAM_DIR"
-        mkdir -p "$NGINX_STREAM_ENABLED_DIR"
-    fi
+    mkdir -p "$NGINX_STREAM_DIR" "$NGINX_STREAM_ENABLED_DIR"
 
     # Check if nginx.conf has the stream block
-    if [ -f /etc/nginx/nginx.conf ] && ! grep -q -E "stream[[:space:]]*\{" /etc/nginx/nginx.conf; then
+    if [ -f /etc/nginx/nginx.conf ] && ! grep -q -E "^[[:space:]]*stream[[:space:]]*\{" /etc/nginx/nginx.conf; then
         echo -e "${YELLOW}Setting up Nginx Stream module...${NC}"
+        local backup="/etc/nginx/nginx.conf.bak.$(date +%Y%m%d%H%M%S)"
+        cp -p /etc/nginx/nginx.conf "$backup"
         cat <<EOF >> /etc/nginx/nginx.conf
 
 # TCP/UDP Stream proxy configuration added by QuickVPS
@@ -22,105 +20,103 @@ stream {
     include /etc/nginx/stream-enabled/*.conf;
 }
 EOF
-        echo -e "${GREEN}✅ Nginx Stream module configured.${NC}"
-        systemctl reload nginx 2>/dev/null || true
+        if nginx_test_and_reload "mv -f '$backup' /etc/nginx/nginx.conf"; then
+            echo -e "${GREEN}✅ Nginx Stream module configured.${NC}"
+        else
+            echo -e "${RED}❌ Nginx does not accept the stream block (is the stream module installed?). Reverted.${NC}"
+            return 1
+        fi
     fi
 }
 
+validate_destination() {
+    # host:port (hostname, IPv4 or [IPv6]) or unix:/path
+    [[ "$1" =~ ^([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}$ || "$1" =~ ^unix:/[A-Za-z0-9._/-]+$ ]]
+}
+
 add_tcp_proxy() {
-    setup_nginx_stream_module
-    
-    read -rp "Enter listen port (public port, e.g. 8883): " LISTEN_PORT
-    if [[ ! "$LISTEN_PORT" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}❌ Invalid port format.${NC}"
-        return
+    prompt_value LISTEN_PORT "Enter listen port (public port, e.g. 8883)"
+    if ! validate_port "$LISTEN_PORT"; then
+        echo -e "${RED}❌ Invalid port.${NC}"
+        return 1
     fi
-    
-    if [ -f "$NGINX_STREAM_DIR/port_$LISTEN_PORT.conf" ]; then
+
+    local config_path="$NGINX_STREAM_DIR/port_$LISTEN_PORT.conf"
+    local enabled_path="$NGINX_STREAM_ENABLED_DIR/port_$LISTEN_PORT.conf"
+    if [ -f "$config_path" ]; then
         echo -e "${YELLOW}Port $LISTEN_PORT is already configured as a TCP Proxy.${NC}"
-        return
+        return 1
     fi
 
-    read -rp "Enter destination (e.g. 127.0.0.1:1884): " DESTINATION
-    if [[ -z "$DESTINATION" ]]; then
-        echo -e "${RED}❌ Destination cannot be empty.${NC}"
-        return
+    prompt_value DESTINATION "Enter destination (e.g. 127.0.0.1:1884)"
+    if ! validate_destination "$DESTINATION"; then
+        echo -e "${RED}❌ Invalid destination. Use host:port or unix:/path.${NC}"
+        return 1
     fi
 
-    read -rp "Enable SSL/TLS Termination for this port? [y/N]: " ENABLE_SSL
-    
-    local CONFIG_PATH="$NGINX_STREAM_DIR/port_$LISTEN_PORT.conf"
-    local ENABLED_PATH="$NGINX_STREAM_ENABLED_DIR/port_$LISTEN_PORT.conf"
-
-    if [[ "$ENABLE_SSL" =~ ^[Yy]$ ]]; then
-        read -rp "Enter domain name for SSL certificate (e.g. mqtt.iluzi.id): " SSL_DOMAIN
-        
-        # Verify cert exists
+    local template
+    if ask_yes_no "Enable SSL/TLS Termination for this port?" n "$([[ -n "$SSL_DOMAIN" ]] && echo y)"; then
+        prompt_value SSL_DOMAIN "Enter domain name for SSL certificate (e.g. mqtt.example.com)"
+        if ! validate_domain "$SSL_DOMAIN"; then
+            echo -e "${RED}❌ Invalid domain.${NC}"
+            return 1
+        fi
         if [ ! -f "/etc/letsencrypt/live/$SSL_DOMAIN/fullchain.pem" ]; then
-            echo -e "${RED}❌ SSL certificate for $SSL_DOMAIN not found in Let's Encrypt directory (/etc/letsencrypt/live/$SSL_DOMAIN/).${NC}"
+            echo -e "${RED}❌ SSL certificate for $SSL_DOMAIN not found in /etc/letsencrypt/live/$SSL_DOMAIN/.${NC}"
             echo -e "${YELLOW}Please create the domain and setup SSL via Certbot first before enabling TCP SSL.${NC}"
-            return
+            return 1
         fi
-
+        template="$NGINX_TEMPLATE_DIR/stream_proxy_ssl.conf.template"
         echo -e "${CYAN}Creating SSL TCP Proxy on port $LISTEN_PORT -> $DESTINATION using $SSL_DOMAIN...${NC}"
-        if confirm_action; then
-            sed -e "s|__LISTEN_PORT__|$LISTEN_PORT|g" \
-                -e "s|__DESTINATION__|$DESTINATION|g" \
-                -e "s|__DOMAIN__|$SSL_DOMAIN|g" \
-                "$SCRIPT_DIR/templates/stream_proxy_ssl.conf.template" > "$CONFIG_PATH"
-        else
-            return
-        fi
     else
+        SSL_DOMAIN=""
+        template="$NGINX_TEMPLATE_DIR/stream_proxy.conf.template"
         echo -e "${CYAN}Creating TCP Proxy on port $LISTEN_PORT -> $DESTINATION...${NC}"
-        if confirm_action; then
-            sed -e "s|__LISTEN_PORT__|$LISTEN_PORT|g" \
-                -e "s|__DESTINATION__|$DESTINATION|g" \
-                "$SCRIPT_DIR/templates/stream_proxy.conf.template" > "$CONFIG_PATH"
-        else
-            return
-        fi
     fi
+    confirm_action || return 1
 
-    ln -sf "$CONFIG_PATH" "$ENABLED_PATH"
+    setup_nginx_stream_module || return 1
 
-    if nginx -t; then
-        systemctl reload nginx
+    sed -e "s|__LISTEN_PORT__|$LISTEN_PORT|g" \
+        -e "s|__DESTINATION__|$(sed_escape "$DESTINATION")|g" \
+        -e "s|__DOMAIN__|$SSL_DOMAIN|g" \
+        "$template" > "$config_path"
+    ln -sf "$config_path" "$enabled_path"
+
+    if nginx_test_and_reload "rm -f '$enabled_path' '$config_path'"; then
         echo -e "${GREEN}✅ TCP Proxy for port $LISTEN_PORT successfully created and enabled.${NC}"
-        log "TCP Proxy added: Port $LISTEN_PORT -> $DESTINATION (SSL: $ENABLE_SSL)"
+        log "TCP Proxy added: Port $LISTEN_PORT -> $DESTINATION (SSL: ${SSL_DOMAIN:-no})"
     else
-        echo -e "${RED}❌ Nginx config test failed. Please check $CONFIG_PATH manually.${NC}"
-        rm -f "$ENABLED_PATH"
+        echo -e "${RED}❌ Nginx config test failed. The change was rolled back.${NC}"
+        return 1
     fi
 }
 
 delete_tcp_proxy() {
-    read -rp "Enter port to delete (e.g. 8883): " LISTEN_PORT
-    if [[ ! "$LISTEN_PORT" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}❌ Invalid port format.${NC}"
-        return
+    prompt_value LISTEN_PORT "Enter port to delete (e.g. 8883)"
+    if ! validate_port "$LISTEN_PORT"; then
+        echo -e "${RED}❌ Invalid port.${NC}"
+        return 1
     fi
-    
-    local CONFIG_PATH="$NGINX_STREAM_DIR/port_$LISTEN_PORT.conf"
-    local ENABLED_PATH="$NGINX_STREAM_ENABLED_DIR/port_$LISTEN_PORT.conf"
 
-    if [ ! -f "$CONFIG_PATH" ]; then
+    local config_path="$NGINX_STREAM_DIR/port_$LISTEN_PORT.conf"
+    local enabled_path="$NGINX_STREAM_ENABLED_DIR/port_$LISTEN_PORT.conf"
+
+    if [ ! -f "$config_path" ]; then
         echo -e "${RED}❌ TCP Proxy for port $LISTEN_PORT not found.${NC}"
-        return
+        return 1
     fi
 
-    echo -e "${RED}Are you sure you want to delete TCP Proxy for port $LISTEN_PORT?${NC}"
-    if confirm_action; then
-        rm -f "$CONFIG_PATH"
-        rm -f "$ENABLED_PATH"
-        
-        if nginx -t; then
-            systemctl reload nginx
-            echo -e "${GREEN}✅ TCP Proxy for port $LISTEN_PORT deleted.${NC}"
-            log "TCP Proxy deleted for port $LISTEN_PORT"
-        else
-            echo -e "${RED}❌ Nginx reload failed after deletion.${NC}"
-        fi
+    echo -e "${RED}TCP Proxy for port $LISTEN_PORT will be deleted.${NC}"
+    confirm_action || return 1
+
+    rm -f "$config_path" "$enabled_path"
+    if nginx_test_and_reload; then
+        echo -e "${GREEN}✅ TCP Proxy for port $LISTEN_PORT deleted.${NC}"
+        log "TCP Proxy deleted for port $LISTEN_PORT"
+    else
+        echo -e "${RED}❌ Nginx reload failed after deletion.${NC}"
+        return 1
     fi
 }
 
