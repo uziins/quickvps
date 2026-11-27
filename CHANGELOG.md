@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP subdirectories no longer use `snippets/fastcgi-php.conf`, whose `try_files` breaks with `alias`
 
 ### Added
+- `--proxy-url` (proxy stack, `add-subdir`, `domain modify`) to reverse-proxy to any `http(s)://host[:port][/path/]`, not just `127.0.0.1:<port>`; `--proxy-host-header client|upstream|<name>`; SNI enabled for https upstreams; `domain modify` can change any root `proxy_pass` target
 - `auth` module: `enable`/`disable` HTTP basic auth for a whole domain or one location path, `add-user`/`delete-user`/`status`; users stored per domain in `/etc/nginx/htpasswd/<domain>` (SHA-512 crypt via `openssl passwd -6`, password never on the command line), HTTPS check, ACME challenge exception, nginx test with rollback
 - `--strip-prefix` / `--keep-prefix` for proxied subdirectories; `X-Forwarded-Prefix` is sent when the prefix is stripped
 - New flags: `--www`, `--ssl`, `--email`, `--force`, `--git-url`, `--node-port`, `--delete-root`, `--path`, `--sub-stack`, `--backup-file`, `--container`, `--listen-port`, `--destination`, `--ssl-domain`, `--help`

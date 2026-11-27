@@ -372,6 +372,13 @@ add_domain() {
 
     select_stack_type || return 1
 
+    # Resolve the proxy target early so a bad port/URL aborts before anything is created
+    local proxy_args=()
+    if [[ "$STACK_TYPE" == "proxy" ]]; then
+        prompt_proxy_target "8080" || return 1
+        mapfile -t proxy_args < <(proxy_sed_args "$PROXY_TARGET")
+    fi
+
     local template_path
     case $STACK_TYPE in
         php)       template_path="$NGINX_TEMPLATE_DIR/nginx_basic.conf.template" ;;
@@ -423,12 +430,7 @@ add_domain() {
             select_docker_app || return 1
             deploy_docker_app "$DOCROOT" || return 1 ;;
         proxy)
-            prompt_value PROXY_PORT "Enter proxy port (e.g. 8090)" "8080"
-            if ! validate_port "$PROXY_PORT"; then
-                echo -e "${RED}❌ Invalid port: $PROXY_PORT${NC}"
-                return 1
-            fi
-            STACK_PORT="$PROXY_PORT" ;;
+            ;;  # target resolved before confirmation
     esac
 
     # conf.d style (RHEL) only loads *.conf: replace an inactive "<domain>" file with "<domain>.conf"
@@ -449,7 +451,8 @@ add_domain() {
         echo "# Managed by QuickVPS"
         echo "# quickvps-docroot: $DOCROOT"
         echo "# quickvps-stack: $STACK_TYPE"
-        sed -e "s|__DOMAIN__|$(sed_escape "$DOMAIN")|g" \
+        sed "${proxy_args[@]}" \
+            -e "s|__DOMAIN__|$(sed_escape "$DOMAIN")|g" \
             -e "s|__DOCROOT__|$(sed_escape "$DOCROOT")|g" \
             -e "s|__PHP_VERSION__|$(sed_escape "$PHP_VERSION")|g" \
             -e "s|__FASTCGI_CONFIG__|$(sed_escape "$(fastcgi_config)")|g" \
@@ -580,20 +583,28 @@ modify_domain() {
         fi
     fi
 
-    local current_port new_port=""
-    current_port=$(grep -oE 'proxy_pass http://127\.0\.0\.1:[0-9]+' "$config_path" | head -n 1 | grep -oE '[0-9]+$')
-    if [[ -n "$current_port" ]]; then
-        new_port="${PROXY_PORT:-}"
-        if [[ -z "$new_port" && "$NON_INTERACTIVE" != "1" ]]; then
-            read -rp "Enter new proxy port (leave blank to keep $current_port): " new_port
+    # proxy_pass of the site root ("location / { ... }"), whatever its target
+    local proxy_info proxy_line="" current_target="" new_target="" new_host=""
+    proxy_info=$(find_root_proxy_pass "$config_path")
+    if [[ -n "$proxy_info" ]]; then
+        IFS=$'\t' read -r proxy_line current_target <<< "$proxy_info"
+        new_target="${PROXY_URL:-$PROXY_PORT}"
+        if [[ -z "$new_target" && "$NON_INTERACTIVE" != "1" ]]; then
+            read -rp "Enter new proxy port or URL (leave blank to keep $current_target): " new_target
         fi
-        if [[ -n "$new_port" ]] && ! validate_port "$new_port"; then
-            echo -e "${RED}❌ Invalid port: $new_port${NC}"
-            return 1
+        if [[ -n "$new_target" ]]; then
+            resolve_proxy_target "$new_target" || return 1
+            new_target="$PROXY_TARGET"
         fi
+        if [[ -n "$PROXY_HOST_HEADER" ]]; then
+            new_host=$(resolve_proxy_host_header "$PROXY_HOST_HEADER") || return 1
+        fi
+    elif [[ -n "$PROXY_URL$PROXY_PORT$PROXY_HOST_HEADER" ]]; then
+        echo -e "${RED}❌ No proxy_pass in 'location /' of $config_path to change.${NC}"
+        return 1
     fi
 
-    if [[ -z "$new_docroot" && -z "$new_port" ]]; then
+    if [[ -z "$new_docroot" && -z "$new_target" && -z "$new_host" ]]; then
         echo -e "${YELLOW}Nothing to change.${NC}"
         return 0
     fi
@@ -627,14 +638,41 @@ modify_domain() {
         set_docroot_permissions "$new_docroot" "$DOMAIN_OWNER"
     fi
 
-    if [[ -n "$new_port" ]]; then
-        sed -i "s|proxy_pass http://127\.0\.0\.1:$current_port\([;/]\)|proxy_pass http://127.0.0.1:$new_port\1|g" "$config_path"
+    if [[ -n "$new_target" || -n "$new_host" ]]; then
+        local tmp
+        tmp=$(mktemp)
+        LINE="$proxy_line" TARGET="$new_target" HOSTV="$new_host" TLS="$PROXY_TARGET_TLS" awk '
+            function count(s, re,   t) { t = s; return gsub(re, "", t) }
+            NR == ENVIRON["LINE"] && ENVIRON["TARGET"] != "" {
+                indent = substr($0, 1, match($0, /[^ \t]/) - 1)
+                print indent "proxy_pass " ENVIRON["TARGET"] ";"
+                if (ENVIRON["TLS"] == "1") need_sni = 1
+                inblk = 1; depth = 1; next
+            }
+            NR == ENVIRON["LINE"] { inblk = 1; depth = 1 }
+            inblk {
+                line = $0; sub(/#.*/, "", line)
+                if (line ~ /^[ \t]*proxy_ssl_server_name[ \t]/) need_sni = 0
+                if (ENVIRON["HOSTV"] != "" && line ~ /^[ \t]*proxy_set_header[ \t]+Host[ \t]/) {
+                    indent = substr($0, 1, match($0, /[^ \t]/) - 1)
+                    print indent "proxy_set_header Host " ENVIRON["HOSTV"] ";"
+                    next
+                }
+                depth += count(line, "[{]") - count(line, "[}]")
+                if (depth <= 0) {
+                    if (need_sni) print "        proxy_ssl_server_name on;"
+                    inblk = 0
+                }
+            }
+            { print }
+        ' "$config_path" > "$tmp" && cat "$tmp" > "$config_path"
+        rm -f "$tmp"
     fi
 
     if nginx_test_and_reload "mv -f '$backup' '$config_path'"; then
         rm -f "$backup"
         echo -e "${GREEN}✅ Domain $DOMAIN updated.${NC}"
-        log "Domain $DOMAIN modified (docroot: ${new_docroot:-unchanged}, port: ${new_port:-unchanged})"
+        log "Domain $DOMAIN modified (docroot: ${new_docroot:-unchanged}, proxy: ${new_target:-unchanged})"
     else
         echo -e "${RED}❌ Nginx config test failed. The change was rolled back.${NC}"
         return 1
@@ -782,6 +820,103 @@ setup_laravel_project() {
     echo -e "${GREEN}✅ Laravel project setup completed${NC}"
 }
 
+# Resolve a proxy target given as a local port ("8090" -> http://127.0.0.1:8090) or a URL
+# ("http://172.16.90.101", "https://10.0.0.5:8443/zabbix/"). Sets:
+#   PROXY_TARGET           normalized URL; a path, if any, always ends with "/"
+#   PROXY_TARGET_HAS_PATH  1 if the URL has a path other than "/"
+#   PROXY_TARGET_TLS       1 for https upstreams
+resolve_proxy_target() {
+    local v="$1"
+    PROXY_TARGET="" PROXY_TARGET_HAS_PATH=0 PROXY_TARGET_TLS=0
+    if validate_port "$v"; then
+        PROXY_TARGET="http://127.0.0.1:$v"
+        return 0
+    fi
+    if [[ ! "$v" =~ ^(https?)://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])(:([0-9]{1,5}))?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+        echo -e "${RED}❌ Invalid proxy target: $v (use a port like 8090 or a URL like http://172.16.90.101:8080/app/)${NC}"
+        return 1
+    fi
+    local scheme="${BASH_REMATCH[1]}" host="${BASH_REMATCH[2]}" port="${BASH_REMATCH[5]}" path="${BASH_REMATCH[6]}"
+    if [[ -n "$port" ]] && ! validate_port "$port"; then
+        echo -e "${RED}❌ Invalid port in proxy URL: $port${NC}"
+        return 1
+    fi
+    if [[ "$path" =~ /\.\.?(/|$) ]]; then
+        echo -e "${RED}❌ Proxy URL path must not contain . or .. segments.${NC}"
+        return 1
+    fi
+    while [[ "$path" == */ ]]; do path="${path%/}"; done
+    if [[ -n "$path" ]]; then
+        path="$path/"
+        PROXY_TARGET_HAS_PATH=1
+    fi
+    [[ "$scheme" == "https" ]] && PROXY_TARGET_TLS=1
+    PROXY_TARGET="$scheme://$host${port:+:$port}$path"
+}
+
+# Value for "proxy_set_header Host": client (default, the visitor's Host), upstream
+# (the host:port from the proxy URL), or a literal hostname.
+resolve_proxy_host_header() {
+    case "${1:-client}" in
+        client) echo '$host' ;;
+        upstream) echo '$proxy_host' ;;
+        *)
+            if [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$ ]]; then
+                echo "$1"
+            else
+                echo -e "${RED}❌ Invalid --proxy-host-header: $1 (use client, upstream or a hostname)${NC}" >&2
+                return 1
+            fi
+            ;;
+    esac
+}
+
+# Ask for / take the proxy target (PROXY_URL, else PROXY_PORT) and resolve it.
+# $1 = prompt default (empty = required)
+prompt_proxy_target() {
+    local default="$1" target="${PROXY_URL:-$PROXY_PORT}"
+    if [[ -z "$target" ]]; then
+        prompt_value target "Enter proxy port or URL (e.g. 8090 or http://172.16.90.101)" "$default"
+    fi
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}❌ A proxy port or URL is required (--proxy-port or --proxy-url).${NC}"
+        return 1
+    fi
+    resolve_proxy_target "$target" || return 1
+    PROXY_HOST_VALUE=$(resolve_proxy_host_header "$PROXY_HOST_HEADER") || return 1
+    if [[ "$PROXY_TARGET" != http://127.0.0.1:* ]]; then
+        echo -e "${CYAN}ℹ️  Upstream $PROXY_TARGET must be reachable from this server (check with: curl -I $PROXY_TARGET).${NC}"
+    fi
+}
+
+# sed expressions that fill the proxy placeholders of a template
+proxy_sed_args() {
+    local url="$1" tls_filter="s| # __TLS_ONLY__||"
+    [[ "$PROXY_TARGET_TLS" == "1" ]] || tls_filter="/__TLS_ONLY__/d"
+    printf '%s\n' -e "$tls_filter" \
+        -e "s|__PROXY_URL__|$(sed_escape "$url")|g" \
+        -e "s|__PROXY_HOST__|$(sed_escape "$PROXY_HOST_VALUE")|g"
+}
+
+# Print "<line>\t<target>" for the proxy_pass inside the site root "location / { }"
+find_root_proxy_pass() {
+    awk '
+        function count(s, re,   t) { t = s; return gsub(re, "", t) }
+        {
+            line = $0; sub(/#.*/, "", line)
+            if (!inloc && line ~ /^[ \t]*location[ \t]+\/[ \t]*\{/) { inloc = 1; depth = 0 }
+            if (inloc) {
+                if (depth == 1 && line ~ /^[ \t]*proxy_pass[ \t]/) {
+                    v = line; sub(/^[ \t]*proxy_pass[ \t]+/, "", v); sub(/[ \t]*;.*/, "", v)
+                    print NR "\t" v; exit
+                }
+                depth += count(line, "[{]") - count(line, "[}]")
+                if (depth <= 0) inloc = 0
+            }
+        }
+    ' "$1"
+}
+
 # Normalize the location path in the variable named $1 to exactly one trailing slash:
 # "/api", "/api/" and "/api//" all become "/api/". Without it, "location /api" + alias or
 # proxy_pass ".../" maps /api/x to //x, also matches /apikey, and with alias allows /api../
@@ -883,23 +1018,36 @@ add_subdirectory() {
 
     local snippet_content="" sub_docroot=""
     if [[ "$SUB_STACK" == "proxy" ]]; then
-        prompt_value PROXY_PORT "Enter proxy port (e.g. 8090)"
-        if ! validate_port "$PROXY_PORT"; then
-            echo -e "${RED}❌ Invalid port: $PROXY_PORT${NC}"
-            return 1
+        prompt_proxy_target "" || return 1
+
+        # Strip: /api/users -> backend /users (or <url path>/users).  Keep: backend gets /api/users.
+        # nginx replaces the matched location prefix with the URI part of proxy_pass, so keeping
+        # the prefix is only possible when the upstream URL has no path.
+        local proxy_url strip_filter="s| # __STRIP_ONLY__||" strip=1
+        if [[ "$PROXY_TARGET_HAS_PATH" == "1" ]]; then
+            if [[ "$STRIP_PREFIX" == "n" ]]; then
+                echo -e "${RED}❌ --keep-prefix cannot be combined with a proxy URL that has a path ($PROXY_TARGET).${NC}"
+                return 1
+            fi
+            echo -e "${CYAN}ℹ️  ${SUBDIR_PATH}x will be forwarded to ${PROXY_TARGET}x.${NC}"
+        else
+            if [[ "$NON_INTERACTIVE" != "1" && -z "$STRIP_PREFIX" ]]; then
+                echo -e "${CYAN}Strip: ${SUBDIR_PATH}users → backend gets /users. Keep: backend gets ${SUBDIR_PATH}users.${NC}"
+            fi
+            ask_yes_no "Strip $path_noslash prefix from requests to backend?" y "$STRIP_PREFIX" || strip=0
         fi
-        # Strip: /api/users -> backend /users.  Keep: /api/users -> backend /api/users.
-        local trailing_slash="/" strip_filter="s| # __STRIP_ONLY__||"
-        if [[ "$NON_INTERACTIVE" != "1" && -z "$STRIP_PREFIX" ]]; then
-            echo -e "${CYAN}Strip: ${SUBDIR_PATH}users → backend gets /users. Keep: backend gets ${SUBDIR_PATH}users.${NC}"
-        fi
-        if ! ask_yes_no "Strip $path_noslash prefix from requests to backend?" y "$STRIP_PREFIX"; then
-            trailing_slash=""
+        if [[ "$strip" == "1" ]]; then
+            proxy_url="$PROXY_TARGET"
+            [[ "$PROXY_TARGET_HAS_PATH" == "1" ]] || proxy_url="$PROXY_TARGET/"
+        else
+            proxy_url="$PROXY_TARGET"
             strip_filter="/__STRIP_ONLY__/d"   # X-Forwarded-Prefix only makes sense when stripping
         fi
-        snippet_content=$(sed -e "$strip_filter" \
-            -e "s|__PATH_NOSLASH__|$path_noslash|g" -e "s|__PATH__|$SUBDIR_PATH|g" -e "s|__PORT__|$PROXY_PORT|g" \
-            -e "s|__TRAILING_SLASH__|$trailing_slash|g" "$NGINX_TEMPLATE_DIR/location_proxy.conf.template")
+        local proxy_args=()
+        mapfile -t proxy_args < <(proxy_sed_args "$proxy_url")
+        snippet_content=$(sed -e "$strip_filter" "${proxy_args[@]}" \
+            -e "s|__PATH_NOSLASH__|$path_noslash|g" -e "s|__PATH__|$SUBDIR_PATH|g" \
+            "$NGINX_TEMPLATE_DIR/location_proxy.conf.template")
     else
         sub_docroot="${DOCROOT:-}"
         if ! prompt_value sub_docroot "Enter document root for this path"; then

@@ -71,6 +71,9 @@ sudo ./setup.sh domain add --domain api.myapp.com --stack proxy --proxy-port 809
 # Example: Add a domain with www alias and Let's Encrypt SSL
 sudo ./setup.sh domain add --domain myapp.com --www --stack php --ssl --email admin@myapp.com --non-interactive
 
+# Example: Proxy a domain to another machine (e.g. an internal Zabbix server)
+sudo ./setup.sh domain add --domain zbx.example.com --stack proxy --proxy-url http://172.16.90.101/zabbix/ --non-interactive
+
 # Example: Same domain, different backends: / -> port 3000, /api/ -> port 8000
 sudo ./setup.sh domain add --domain myapp.com --stack proxy --proxy-port 3000 --non-interactive
 sudo ./setup.sh domain add-subdir --domain myapp.com --path /api/ --sub-stack proxy --proxy-port 8000 --keep-prefix --non-interactive
@@ -112,6 +115,11 @@ sudo ./setup.sh auth disable --domain myapp.com --path /admin/
 Basic auth only base64-encodes credentials, so enabling it on a domain without HTTPS requires `--force`.
 Site-wide auth keeps `/.well-known/acme-challenge/` open for certificate renewals. Avoid it on APIs called
 from browsers: CORS preflight requests carry no credentials and would get a 401.
+
+`--proxy-url` accepts `http(s)://host[:port][/path/]` for the `proxy` stack, `add-subdir` and `domain modify`.
+The upstream must be reachable from the VPS. A URL path replaces the matched location (e.g. `/` → `/zabbix/`), so
+`--keep-prefix` cannot be combined with it. Use `--proxy-host-header upstream` when the upstream relies on
+name-based virtual hosts and expects its own hostname instead of the public domain.
 
 Run `sudo ./setup.sh --help` for the full list of modules, actions and flags. In non-interactive mode
 optional questions are answered "no" (e.g. SSL is only requested with `--ssl`), and an existing domain

@@ -74,7 +74,9 @@ Options:
   --owner <user>           Owner of the document root
   --git-url <url>          Clone this repository into the document root
   --node-port <port>       Port for a Node.js app
-  --proxy-port <port>      Port to reverse-proxy to
+  --proxy-port <port>      Local port to reverse-proxy to (http://127.0.0.1:<port>)
+  --proxy-url <url>        Upstream URL instead, e.g. http://172.16.90.101 or https://10.0.0.5:8443/app/
+  --proxy-host-header <v>  Host header sent upstream: client (default), upstream, or a hostname
   --ssl                    Request a Let's Encrypt certificate
   --email <address>        Email for Let's Encrypt (used with --ssl)
   --force                  Overwrite an existing domain config
@@ -103,7 +105,7 @@ reset_input_vars() {
     unset DOMAIN STACK_TYPE DOCROOT DOMAIN_OWNER USERNAME PROXY_PORT DB_NAME DB_USER DB_PASS DB_ENGINE \
           DOCKER_APP DOCKER_PORT NODE_PORT STACK_PORT WWW_DOMAIN ENABLE_WWW ENABLE_SSL GIT_URL FORCE \
           DELETE_ROOT SUBDIR_PATH SUB_STACK STRIP_PREFIX PASS_STDIN CONTAINER_NAME LISTEN_PORT DESTINATION \
-          SSL_DOMAIN BACKUP_FILE SSL_EMAIL
+          SSL_DOMAIN BACKUP_FILE SSL_EMAIL PROXY_URL PROXY_HOST_HEADER
 }
 reset_input_vars
 
@@ -152,6 +154,8 @@ if [ "$#" -gt 0 ]; then
             --git-url) export GIT_URL="$2" ;;
             --node-port) export NODE_PORT="$2" ;;
             --proxy-port) export PROXY_PORT="$2" ;;
+            --proxy-url) export PROXY_URL="$2" ;;
+            --proxy-host-header) export PROXY_HOST_HEADER="$2" ;;
             --email) export SSL_EMAIL="$2" ;;
             --path) export SUBDIR_PATH="$2" ;;
             --sub-stack) export SUB_STACK="$2" ;;
